@@ -2,6 +2,14 @@
 config.py — Token, API key, hằng số toàn cục
 """
 import os
+from pathlib import Path
+
+# Đọc .env cùng thư mục với config.py (VPS / local)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+except ImportError:
+    pass
 
 # =========================
 # BOT TOKEN & API KEYS (chỉ từ biến môi trường)
