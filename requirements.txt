@@ -1,0 +1,6 @@
+python-telegram-bot
+google-genai
+python-dotenv
+feedparser
+requests
+yt-dlp

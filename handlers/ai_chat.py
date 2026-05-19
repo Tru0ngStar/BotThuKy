@@ -40,9 +40,9 @@ Bạn là Thư Ký — một chatbot dễ thương, vui vẻ, hoà đồng của
 ### Từ vựng Gen Z (dùng khi phù hợp ngữ cảnh):
 | Loại | Từ dùng được |
 |------|-------------|
-| Đồng ý | okiii, okeee, gòi gòi, chắc cú, yesss |
+| Đồng ý | okiii,okela okeee, gòi gòi, chắc cú, yesss |
 | Từ chối | hôngg, khum, thui nha, thoaiii mờ |
-| Cảm thán | ùi, chời ơi, ố là la, omgg, no cap |
+| Cảm thán | ùi, chời ơi, ố là la, omgg, no cap, cute dạ |
 | Khen | ngon, siêu đỉnh, đỉnh của chóp, slay, iconic lun |
 | Slang | chill đi, drama, vibe check, relate 100%, periodt |
 
@@ -56,7 +56,49 @@ Bạn là Thư Ký — một chatbot dễ thương, vui vẻ, hoà đồng của
 3. Câu trả lời ngắn gọn, dễ hiểu, KHÔNG dài dòng trừ khi được yêu cầu
 4. Không bịa thông tin khi không biết, thành thật nói "tớ không biết"
 5. Giữ vai trò chatbot của nhóm, KHÔNG nhận mình là AI khác (ChatGPT, Gemini...)
+6. Khi có "Tin nhắn được reply", hãy dựa vào đó để thực hiện yêu cầu (dịch, tóm tắt, kiểm tra tin, giải thích...)
 """
+
+
+def _extract_message_text(msg) -> str | None:
+    """Lấy nội dung chữ từ tin nhắn (text hoặc caption)."""
+    if not msg:
+        return None
+    if msg.text:
+        return msg.text.strip()
+    if msg.caption:
+        return msg.caption.strip()
+    return None
+
+
+def _reply_author_label(reply_msg, bot_id: int) -> str:
+    if not reply_msg or not reply_msg.from_user:
+        return "Người dùng"
+    if reply_msg.from_user.id == bot_id:
+        return "Thư Ký (bot)"
+    return reply_msg.from_user.full_name or "Người dùng"
+
+
+def _build_prompt_with_reply(user_text: str, reply_msg, bot_id: int) -> str:
+    """Ghép tin được reply + yêu cầu của user."""
+    replied_text = _extract_message_text(reply_msg)
+    if not replied_text:
+        return user_text
+
+    author = _reply_author_label(reply_msg, bot_id)
+
+    if user_text:
+        return (
+            f"Tin nhắn được reply (từ {author}):\n"
+            f"\"{replied_text}\"\n\n"
+            f"Yêu cầu của người dùng: {user_text}"
+        )
+
+    return (
+        f"Tin nhắn được reply (từ {author}):\n"
+        f"\"{replied_text}\"\n\n"
+        f"Hãy phản hồi phù hợp với ngữ cảnh tin trên."
+    )
 
 
 async def get_ai_response(user_id: int, prompt: str) -> str:
@@ -135,16 +177,30 @@ async def ai_chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     # Nếu bot được tag hoặc reply, xử lý AI chat
     if bot_mentioned or bot_replied:
-        if not text or len(text.strip()) == 0:
-            await message.reply_text("👋 Cậu cần gửi tin nhắn để tớ có thể trả lời nhaa!")
-            return True
+        reply_msg = message.reply_to_message
+        replied_text = _extract_message_text(reply_msg) if reply_msg else None
+
+        if not text.strip():
+            if replied_text:
+                text = ""
+            else:
+                await message.reply_text(
+                    "👋 Cậu cần gửi tin nhắn (hoặc reply một tin có chữ) để tớ trả lời nhaa!"
+                )
+                return True
+
+        prompt = _build_prompt_with_reply(
+            text.strip(),
+            reply_msg,
+            context.bot.id,
+        )
 
         # Hiển thị "đang typing"
         await context.bot.send_chat_action(chat_id=message.chat.id, action="typing")
 
         # Lấy phản hồi từ AI (theo phiên của từng user)
         user_id = message.from_user.id
-        ai_response = await get_ai_response(user_id, text)
+        ai_response = await get_ai_response(user_id, prompt)
 
         # Trả lời
         await message.reply_text(ai_response)
