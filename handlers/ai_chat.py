@@ -4,7 +4,7 @@ handlers/ai_chat.py — AI chatbot: SYSTEM_PROMPT, get_ai_response, ai_chat_hand
 from telegram import Update
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
-from config import genai_client, ai_model_name
+from config import gemini_clients, ai_model_name, generate_gemini_content
 from database import (
     get_ai_session_history,
     save_ai_session_history,
@@ -103,7 +103,7 @@ def _build_prompt_with_reply(user_text: str, reply_msg, bot_id: int) -> str:
 
 async def get_ai_response(user_id: int, prompt: str) -> str:
     """Lấy phản hồi từ Google AI, có kèm lịch sử phiên theo user."""
-    if not genai_client or not ai_model_name:
+    if not gemini_clients or not ai_model_name:
         return "❌ AI service không khả dụng. Vui lòng cài đặt: pip install google-genai"
 
     try:
@@ -119,10 +119,7 @@ Các tin nhắn trước (nếu có):
 
 Tin nhắn mới của người dùng: {prompt}"""
 
-        response = genai_client.models.generate_content(
-            model=ai_model_name,
-            contents=full_prompt,
-        )
+        response = generate_gemini_content(ai_model_name, full_prompt)
         reply_text = (response.text or "").strip()
         if not reply_text:
             return "❌ AI không trả lời được (có thể bị chặn nội dung)."

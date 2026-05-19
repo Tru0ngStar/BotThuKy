@@ -318,6 +318,7 @@ __pycache__/
 
 # Secrets & local data
 .env
+secrets.txt
 *.db
 downloads/
 

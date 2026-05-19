@@ -4,23 +4,53 @@ config.py — Token, API key, hằng số toàn cục
 import os
 from pathlib import Path
 
-# Đọc .env cùng thư mục với config.py (VPS / local)
-try:
-    from dotenv import load_dotenv
-    load_dotenv(Path(__file__).resolve().parent / ".env")
-except ImportError:
-    pass
+_BASE_DIR = Path(__file__).resolve().parent
+_SECRETS_TXT = _BASE_DIR / os.getenv("SECRETS_FILE", "secrets.txt")
+
+def _parse_secrets_txt(path: Path) -> tuple[str | None, list[str]]:
+    """Đọc secrets.txt — bot:... và ai:... (mỗi dòng ai: = một API key)."""
+    bot_token = None
+    ai_keys: list[str] = []
+    if not path.is_file():
+        return bot_token, ai_keys
+
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if ":" not in line:
+            continue
+        name, _, value = line.partition(":")
+        name = name.strip().lower()
+        value = value.strip()
+        if not value:
+            continue
+        if name == "bot":
+            bot_token = value
+        elif name == "ai":
+            ai_keys.append(value)
+    return bot_token, ai_keys
+
+
+_TXT_BOT, _TXT_AI_KEYS = _parse_secrets_txt(_SECRETS_TXT)
 
 # =========================
-# BOT TOKEN & API KEYS (chỉ từ biến môi trường)
+# BOT TOKEN & API KEYS — tự đọc từ secrets.txt khi chạy main.py
 # =========================
-BOT_TOKEN = os.getenv('BOT_TOKEN')
+BOT_TOKEN = _TXT_BOT
 if not BOT_TOKEN:
-    raise ValueError("Thiếu BOT_TOKEN trong biến môi trường!")
+    raise ValueError(
+        f"Thiếu token Telegram. Tạo file {_SECRETS_TXT} với dòng:\n"
+        f"  bot:7123456789:AAH..."
+    )
 
-GOOGLE_AI_API_KEY = os.getenv('GEMINI_API_KEY')
-if not GOOGLE_AI_API_KEY:
-    raise ValueError("Thiếu GEMINI_API_KEY trong biến môi trường!")
+GEMINI_API_KEYS = _TXT_AI_KEYS
+if not GEMINI_API_KEYS:
+    raise ValueError(
+        f"Thiếu API AI. Thêm vào {_SECRETS_TXT} (mỗi key một dòng):\n"
+        f"  ai:AIzaSy..."
+    )
+GOOGLE_AI_API_KEY = GEMINI_API_KEYS[0]
 
 # =========================
 # OWNER & URLs
@@ -41,19 +71,65 @@ except ImportError:
     print("[WARN] google-genai not installed. Install with: pip install google-genai")
 
 genai_client = None
+gemini_clients: list = []
+_last_gemini_client_idx = 0
 ai_model_name = None
 # Giữ tên cũ để code kiểm tra `if ai_model` vẫn hoạt động
 ai_model = None
 
+
+def _is_gemini_retryable(exc: Exception) -> bool:
+    """Lỗi tạm thời — thử API key khác."""
+    msg = str(exc).upper()
+    retry_markers = (
+        "503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED",
+        "HIGH DEMAND", "OVERLOADED", "RATE LIMIT", "QUOTA",
+    )
+    return any(m in msg for m in retry_markers)
+
+
+def generate_gemini_content(model: str, contents: str):
+    """Gọi Gemini; nếu key hiện tại lỗi 503/429 thì tự đổi sang key khác."""
+    global _last_gemini_client_idx
+    if not gemini_clients:
+        raise RuntimeError("Chưa khởi tạo Gemini client")
+
+    n = len(gemini_clients)
+    start = _last_gemini_client_idx % n
+    last_error = None
+
+    for attempt in range(n):
+        idx = (start + attempt) % n
+        client = gemini_clients[idx]
+        try:
+            response = client.models.generate_content(model=model, contents=contents)
+            _last_gemini_client_idx = idx
+            return response
+        except Exception as e:
+            last_error = e
+            if _is_gemini_retryable(e) and attempt < n - 1:
+                print(f"[WARN] Gemini API key #{idx + 1}/{n} lỗi, đổi key khác: {e}")
+                continue
+            raise
+
+    raise last_error or RuntimeError("Không gọi được Gemini")
+
+
 if GOOGLE_AI_AVAILABLE:
     try:
-        genai_client = genai.Client(api_key=GOOGLE_AI_API_KEY)
-        ai_model_name = 'gemini-2.5-flash'
+        for i, key in enumerate(GEMINI_API_KEYS):
+            gemini_clients.append(genai.Client(api_key=key))
+        genai_client = gemini_clients[0]
+        ai_model_name = "gemini-2.5-flash"
         ai_model = ai_model_name
-        print(f"[OK] Google AI client initialized (model: {ai_model_name})")
+        src = "secrets.txt" if _SECRETS_TXT.is_file() else "?"
+        print(
+            f"[OK] Google AI: {len(gemini_clients)} API key(s), model {ai_model_name} ({src})"
+        )
     except Exception as e:
         print(f"[WARN] Error initializing Google AI: {e}")
         genai_client = None
+        gemini_clients = []
         ai_model_name = None
         ai_model = None
 

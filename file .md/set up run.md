@@ -1,86 +1,72 @@
-# Hướng Dẫn Chạy Telegram Bot (VPS Windows)
+# Hướng Dẫn Chạy Bot (VPS Windows)
 
-## Yêu Cầu
+## Bước 1: Tạo `secrets.txt`
 
-- Windows Server / Windows 10–11
-- Python 3.11 (`py -3.11`)
-- Bot đặt tại `C:\bot`
-- Thư mục `C:\bot\.venv` đã cài sẵn thư viện (AI, telegram-bot, …)
+Trong `C:\bot`, tạo file **`secrets.txt`** (cùng cấp `main.py`):
+
+```text
+bot:7123456789:AAHxxxxxxxxxxxxxxxx
+ai:AIzaSy_key_1
+ai:AIzaSy_key_2
+```
+
+- **`bot:`** — token Telegram (một dòng)
+- **`ai:`** — API Gemini (nhiều dòng = nhiều key, tự đổi khi lỗi 503)
+
+Copy mẫu từ `secrets.txt.example` rồi điền key thật.
+
+> Không đẩy `secrets.txt` lên Git.
 
 ---
 
-## Chạy Bot (PowerShell)
-
-Mở **PowerShell**, chạy lần lượt:
+## Bước 2: Chạy bot
 
 ```powershell
 cd C:\bot
-.\.venv\Scripts\Activate.ps1
-```
-
-> Trên VPS hiện tại, `.venv` đã có đủ thư viện AI — không cần `pip install` lại trừ khi đổi máy hoặc thêm package.
-
-Đặt token (thay `???` bằng giá trị thật):
-
-```powershell
-$env:BOT_TOKEN="???"
-$env:GEMINI_API_KEY="???"
-```
-
-Chạy bot:
-
-```powershell
 py -3.11 main.py
 ```
 
-Thấy `✅ Bot is running!` là bot đã lên. **Giữ cửa sổ PowerShell mở** — đóng cửa sổ = bot tắt.
+Bot **tự đọc** `secrets.txt` — **không** cần `$env:BOT_TOKEN=...` hay `.env`.
 
----
+Thấy:
 
-## Cách Khác: File `.env`
-
-Thay vì gõ biến môi trường mỗi lần, tạo `C:\bot\.env`:
-
-```env
-BOT_TOKEN=your_bot_token_here
-GEMINI_API_KEY=your_gemini_key_here
+```text
+[OK] Google AI: 2 API key(s), model gemini-2.5-flash
+🤖 Starting bot...
+✅ Bot is running!
 ```
 
-Sau đó chỉ cần:
+Dừng: `Ctrl+C` → chạy lại `py -3.11 main.py`.
 
-```powershell
-cd C:\bot
-.\.venv\Scripts\Activate.ps1
-py -3.11 main.py
-```
-
-> Không commit file `.env` lên Git (đã có trong `.gitignore`).
+Sửa `secrets.txt` xong cũng cần restart bot.
 
 ---
 
-## Xem Log
+## Lỗi thường gặp
 
-Log in ra **cùng cửa sổ PowerShell** (lỗi DB, AI, khởi động…). Không có file `log.txt` tự động trừ khi bạn tự redirect output.
+| Lỗi | Cách xử lý |
+|-----|------------|
+| `Thiếu token Telegram` | Có dòng `bot:...` trong `C:\bot\secrets.txt` |
+| `Thiếu API AI` | Có ít nhất một dòng `ai:...` |
+| Chỉ `1 API key` | Thêm nhiều dòng `ai:...` (mỗi key một dòng) |
+| Thiếu thư viện | `pip install -r requirements.txt` |
 
 ---
 
-## Cấu Trúc Thư Mục (tham khảo)
+## Cấu trúc thư mục
 
 ```
 C:\bot\
-├── main.py              ← Entry point
-├── config.py
+├── main.py
+├── config.py       ← tự đọc secrets.txt
+├── secrets.txt     ← token & API (bí mật)
 ├── handlers\
-├── .venv\               ← Virtualenv (đã có thư viện trên VPS)
-├── .env                 ← Token (tùy chọn)
-├── downloads\           ← Video / MP3 tải về
-└── cookies.txt          ← Cookie TikTok (nếu cần)
+├── downloads\
+└── thuky.db
 ```
 
 ---
 
-## Lưu Ý
+## Update code trên VPS
 
-- Sửa code xong: `Ctrl+C` dừng bot, chạy lại `py -3.11 main.py`.
-- Thiếu token → lỗi ngay khi import `config.py`.
-- Cần FFmpeg cho `/mp3` (cài riêng trên hệ thống, không nằm trong venv).
+Chỉ đè file `.py` — **giữ** `secrets.txt` và `thuky.db`.
