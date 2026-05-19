@@ -1,10 +1,12 @@
 """
 handlers/ai_chat.py — AI chatbot: SYSTEM_PROMPT, get_ai_response, ai_chat_handler, reset_ai_session
 """
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
-from config import AI_AVAILABLE, generate_ai_chat
+from config import OWNER_ID
+from utils import ai_client
+from utils.ai_client import AI_AVAILABLE, generate_ai_chat
 from database import (
     get_ai_session_history,
     save_ai_session_history,
@@ -101,7 +103,84 @@ def _build_prompt_with_reply(user_text: str, reply_msg, bot_id: int) -> str:
     )
 
 
-async def get_ai_response(user_id: int, prompt: str) -> str:
+async def _is_admin_or_owner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Chủ bot hoặc admin nhóm."""
+    user = update.effective_user
+    if user.id == OWNER_ID:
+        return True
+    chat = update.effective_chat
+    if chat.type == "private":
+        return user.id == OWNER_ID
+    member = await context.bot.get_chat_member(chat.id, user.id)
+    return member.status in ("creator", "administrator")
+
+
+async def _is_admin_or_owner_query(query, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    user = query.from_user
+    if user.id == OWNER_ID:
+        return True
+    chat = query.message.chat
+    if chat.type == "private":
+        return user.id == OWNER_ID
+    member = await context.bot.get_chat_member(chat.id, user.id)
+    return member.status in ("creator", "administrator")
+
+
+async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lệnh /model — chọn model cho mọi nhóm."""
+    if not await _is_admin_or_owner(update, context):
+        await update.message.reply_text("⛔ Chỉ admin nhóm hoặc chủ bot mới dùng được /model")
+        return
+
+    current_label = ai_client.get_provider_label(ai_client.get_provider())
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("⚡ Groq", callback_data="ai_model|groq"),
+            InlineKeyboardButton("🧠 OpenRouter", callback_data="ai_model|openrouter"),
+        ],
+    ])
+    await update.message.reply_text(
+        f"🤖 **Chọn model AI** (áp dụng mọi nhóm)\n\nĐang dùng: **{current_label}**",
+        reply_markup=keyboard,
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+async def model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Xử lý nút chọn model — áp dụng mọi nhóm."""
+    query = update.callback_query
+    if not query.data or not query.data.startswith("ai_model|"):
+        return
+
+    if query.from_user.id != OWNER_ID and not await _is_admin_or_owner_query(query, context):
+        await query.answer("⛔ Chỉ admin hoặc chủ bot!", show_alert=True)
+        return
+
+    provider = query.data.split("|", 1)[1]
+    if provider not in ("groq", "openrouter"):
+        await query.answer("Lựa chọn không hợp lệ", show_alert=True)
+        return
+
+    has_groq = any(p.label.startswith("Groq") for p in ai_client.ai_providers)
+    has_or = any(p.label.startswith("OpenRouter") for p in ai_client.ai_providers)
+    if provider == "groq" and not has_groq:
+        await query.answer("Chưa có key Groq trong secrets.txt", show_alert=True)
+        return
+    if provider == "openrouter" and not has_or:
+        await query.answer("Chưa có key OpenRouter trong secrets.txt", show_alert=True)
+        return
+
+    ai_client.set_provider(provider)
+    label = ai_client.get_provider_label(provider)
+    await query.answer(f"Đã đổi → {label}")
+    await query.edit_message_text(
+        f"✅ Model **mọi nhóm**: **{label}**",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+
+
+async def get_ai_response(user_id: int, prompt: str, chat_id: int | None = None) -> str:
     """Lấy phản hồi AI (Groq → OpenRouter), có kèm lịch sử phiên."""
     if not AI_AVAILABLE:
         return "❌ AI không khả dụng. Cài: pip install openai — và thêm groq:/openrouter: vào secrets.txt"
@@ -112,7 +191,7 @@ async def get_ai_response(user_id: int, prompt: str) -> str:
 
         user_content = f"""{history_block}Tin nhắn mới của người dùng: {prompt}"""
 
-        reply_text = generate_ai_chat(SYSTEM_PROMPT, user_content)
+        reply_text = generate_ai_chat(SYSTEM_PROMPT, user_content, chat_id=chat_id)
         if not reply_text:
             return "❌ AI không trả lời được (có thể bị chặn nội dung)."
 
@@ -124,8 +203,11 @@ async def get_ai_response(user_id: int, prompt: str) -> str:
 
         return reply_text
     except Exception as e:
+        err = str(e)
         print(f"Error calling AI: {e}")
-        return f"❌ Lỗi khi gọi AI: {str(e)}"
+        if len(err) > 200:
+            err = err[:200] + "..."
+        return f"❌ Lỗi AI: {err}\n\n💡 Kiểm tra secrets.txt (groq: / openrouter:) và pip install openai"
 
 
 async def ai_chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -187,7 +269,7 @@ async def ai_chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         # Lấy phản hồi từ AI (theo phiên của từng user)
         user_id = message.from_user.id
-        ai_response = await get_ai_response(user_id, prompt)
+        ai_response = await get_ai_response(user_id, prompt, chat_id=message.chat.id)
 
         # Trả lời
         await message.reply_text(ai_response)

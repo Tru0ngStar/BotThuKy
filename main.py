@@ -34,6 +34,8 @@ def main():
 
     # AI Chat
     app.add_handler(CommandHandler("phienmoi",  ai_chat.reset_ai_session))
+    app.add_handler(CommandHandler("model",     ai_chat.model_command))
+    app.add_handler(CallbackQueryHandler(ai_chat.model_callback, pattern=r"^ai_model\|"))
 
     # Caro
     app.add_handler(CommandHandler("caro",      caro.caro_start))

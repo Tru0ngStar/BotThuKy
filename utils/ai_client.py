@@ -22,6 +22,8 @@ OPENROUTER_MODEL = "deepseek/deepseek-chat"
 ai_providers: list = []
 _last_provider_idx = 0
 AI_AVAILABLE = False
+# Model đã chọn qua /model — áp dụng mọi nhóm
+_global_provider_pref: str | None = None
 
 
 @dataclass
@@ -88,8 +90,48 @@ def init_ai_providers(groq_keys: list[str], openrouter_keys: list[str]) -> None:
         )
 
 
-def generate_ai_chat(system_prompt: str, user_content: str) -> str:
-    """Gọi chat completion; lỗi tạm thời thì thử provider/key tiếp theo."""
+def _provider_kind(prov: _AIProvider) -> str:
+    return "groq" if prov.label.startswith("Groq") else "openrouter"
+
+
+def set_provider(provider: str) -> None:
+    """Đặt model cho mọi nhóm."""
+    global _global_provider_pref
+    if provider not in ("groq", "openrouter"):
+        raise ValueError("provider phải là groq hoặc openrouter")
+    _global_provider_pref = provider
+
+
+def get_provider() -> str | None:
+    return _global_provider_pref
+
+
+def get_effective_provider(chat_id: int | None = None) -> str | None:
+    return _global_provider_pref
+
+
+def get_provider_label(provider: str | None) -> str:
+    if provider == "groq":
+        return f"Groq ({GROQ_MODEL})"
+    if provider == "openrouter":
+        return f"OpenRouter ({OPENROUTER_MODEL})"
+    return "Tự động (Groq → OpenRouter)"
+
+
+def _ordered_providers(chat_id: int | None) -> list:
+    """Sắp xếp provider: ưu tiên theo /model, còn lại làm dự phòng."""
+    pref = get_effective_provider(chat_id)
+    groq = [p for p in ai_providers if _provider_kind(p) == "groq"]
+    orp = [p for p in ai_providers if _provider_kind(p) == "openrouter"]
+    if pref == "groq":
+        return groq + orp
+    if pref == "openrouter":
+        return orp + groq
+    return groq + orp if groq or orp else list(ai_providers)
+
+
+def generate_ai_chat(system_prompt: str, user_content: str, chat_id: int | None = None) -> str:
+    """Gọi chat completion; lỗi thì thử provider dự phòng."""
     global _last_provider_idx
 
     if not ai_providers:
@@ -100,13 +142,15 @@ def generate_ai_chat(system_prompt: str, user_content: str) -> str:
         {"role": "user", "content": user_content},
     ]
 
-    n = len(ai_providers)
-    start = _last_provider_idx % n
+    ordered = _ordered_providers(chat_id)
+    if not ordered:
+        raise RuntimeError("Không có provider AI nào khả dụng")
+
+    n = len(ordered)
     last_error = None
 
     for attempt in range(n):
-        idx = (start + attempt) % n
-        prov: _AIProvider = ai_providers[idx]
+        prov: _AIProvider = ordered[attempt]
         try:
             response = prov.client.chat.completions.create(
                 model=prov.model,
@@ -116,12 +160,13 @@ def generate_ai_chat(system_prompt: str, user_content: str) -> str:
             text = (response.choices[0].message.content or "").strip()
             if not text:
                 raise RuntimeError("Model trả về rỗng")
-            _last_provider_idx = idx
+            if prov in ai_providers:
+                _last_provider_idx = ai_providers.index(prov)
             return text
         except Exception as e:
             last_error = e
-            if _is_retryable(e) and attempt < n - 1:
-                print(f"[WARN] {prov.label} lỗi, đổi kênh: {e}")
+            print(f"[WARN] {prov.label} lỗi: {e}")
+            if attempt < n - 1:
                 continue
             raise
 

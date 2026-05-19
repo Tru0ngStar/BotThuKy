@@ -32,6 +32,14 @@ def _parse_secrets_txt(path: Path) -> tuple[str | None, list[str], list[str]]:
             groq_keys.append(value)
         elif name in ("openrouter", "or"):
             openrouter_keys.append(value)
+        elif name == "ai":
+            # Tự nhận loại key theo prefix
+            if value.startswith("gsk_"):
+                groq_keys.append(value)
+            elif value.startswith("sk-or-") or value.startswith("sk-"):
+                openrouter_keys.append(value)
+            else:
+                groq_keys.append(value)
     return bot_token, groq_keys, openrouter_keys
 
 
@@ -64,9 +72,11 @@ DOWNLOADS_DIR = "downloads"
 # =========================
 # AI: Groq → OpenRouter (OpenAI SDK)
 # =========================
-from utils.ai_client import AI_AVAILABLE, generate_ai_chat, init_ai_providers
+from utils import ai_client
 
-init_ai_providers(_TXT_GROQ_KEYS, _TXT_OPENROUTER_KEYS)
+ai_client.init_ai_providers(_TXT_GROQ_KEYS, _TXT_OPENROUTER_KEYS)
+AI_AVAILABLE = ai_client.AI_AVAILABLE
+generate_ai_chat = ai_client.generate_ai_chat
 ai_model = AI_AVAILABLE  # tương thích code cũ: if ai_model
 
 # Tạo thư mục downloads nếu chưa có
