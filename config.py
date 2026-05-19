@@ -7,12 +7,13 @@ from pathlib import Path
 _BASE_DIR = Path(__file__).resolve().parent
 _SECRETS_TXT = _BASE_DIR / os.getenv("SECRETS_FILE", "secrets.txt")
 
-def _parse_secrets_txt(path: Path) -> tuple[str | None, list[str]]:
-    """Đọc secrets.txt — bot:... và ai:... (mỗi dòng ai: = một API key)."""
+def _parse_secrets_txt(path: Path) -> tuple[str | None, list[str], list[str]]:
+    """Đọc secrets.txt — bot:, groq:, openrouter: (mỗi dòng = một key)."""
     bot_token = None
-    ai_keys: list[str] = []
+    groq_keys: list[str] = []
+    openrouter_keys: list[str] = []
     if not path.is_file():
-        return bot_token, ai_keys
+        return bot_token, groq_keys, openrouter_keys
 
     for raw in path.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
@@ -27,12 +28,14 @@ def _parse_secrets_txt(path: Path) -> tuple[str | None, list[str]]:
             continue
         if name == "bot":
             bot_token = value
-        elif name == "ai":
-            ai_keys.append(value)
-    return bot_token, ai_keys
+        elif name == "groq":
+            groq_keys.append(value)
+        elif name in ("openrouter", "or"):
+            openrouter_keys.append(value)
+    return bot_token, groq_keys, openrouter_keys
 
 
-_TXT_BOT, _TXT_AI_KEYS = _parse_secrets_txt(_SECRETS_TXT)
+_TXT_BOT, _TXT_GROQ_KEYS, _TXT_OPENROUTER_KEYS = _parse_secrets_txt(_SECRETS_TXT)
 
 # =========================
 # BOT TOKEN & API KEYS — tự đọc từ secrets.txt khi chạy main.py
@@ -44,13 +47,12 @@ if not BOT_TOKEN:
         f"  bot:7123456789:AAH..."
     )
 
-GEMINI_API_KEYS = _TXT_AI_KEYS
-if not GEMINI_API_KEYS:
+if not _TXT_GROQ_KEYS and not _TXT_OPENROUTER_KEYS:
     raise ValueError(
-        f"Thiếu API AI. Thêm vào {_SECRETS_TXT} (mỗi key một dòng):\n"
-        f"  ai:AIzaSy..."
+        f"Thiếu API AI. Thêm vào {_SECRETS_TXT}:\n"
+        f"  groq:gsk_...\n"
+        f"  openrouter:sk-or-v1-..."
     )
-GOOGLE_AI_API_KEY = GEMINI_API_KEYS[0]
 
 # =========================
 # OWNER & URLs
@@ -60,78 +62,12 @@ RSS_URL = "https://vnexpress.net/rss/tin-moi-nhat.rss"
 DOWNLOADS_DIR = "downloads"
 
 # =========================
-# Google AI Initialization (google-genai SDK)
+# AI: Groq → OpenRouter (OpenAI SDK)
 # =========================
-try:
-    from google import genai
-    GOOGLE_AI_AVAILABLE = True
-except ImportError:
-    GOOGLE_AI_AVAILABLE = False
-    genai = None
-    print("[WARN] google-genai not installed. Install with: pip install google-genai")
+from utils.ai_client import AI_AVAILABLE, generate_ai_chat, init_ai_providers
 
-genai_client = None
-gemini_clients: list = []
-_last_gemini_client_idx = 0
-ai_model_name = None
-# Giữ tên cũ để code kiểm tra `if ai_model` vẫn hoạt động
-ai_model = None
-
-
-def _is_gemini_retryable(exc: Exception) -> bool:
-    """Lỗi tạm thời — thử API key khác."""
-    msg = str(exc).upper()
-    retry_markers = (
-        "503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED",
-        "HIGH DEMAND", "OVERLOADED", "RATE LIMIT", "QUOTA",
-    )
-    return any(m in msg for m in retry_markers)
-
-
-def generate_gemini_content(model: str, contents: str):
-    """Gọi Gemini; nếu key hiện tại lỗi 503/429 thì tự đổi sang key khác."""
-    global _last_gemini_client_idx
-    if not gemini_clients:
-        raise RuntimeError("Chưa khởi tạo Gemini client")
-
-    n = len(gemini_clients)
-    start = _last_gemini_client_idx % n
-    last_error = None
-
-    for attempt in range(n):
-        idx = (start + attempt) % n
-        client = gemini_clients[idx]
-        try:
-            response = client.models.generate_content(model=model, contents=contents)
-            _last_gemini_client_idx = idx
-            return response
-        except Exception as e:
-            last_error = e
-            if _is_gemini_retryable(e) and attempt < n - 1:
-                print(f"[WARN] Gemini API key #{idx + 1}/{n} lỗi, đổi key khác: {e}")
-                continue
-            raise
-
-    raise last_error or RuntimeError("Không gọi được Gemini")
-
-
-if GOOGLE_AI_AVAILABLE:
-    try:
-        for i, key in enumerate(GEMINI_API_KEYS):
-            gemini_clients.append(genai.Client(api_key=key))
-        genai_client = gemini_clients[0]
-        ai_model_name = "gemini-2.5-flash"
-        ai_model = ai_model_name
-        src = "secrets.txt" if _SECRETS_TXT.is_file() else "?"
-        print(
-            f"[OK] Google AI: {len(gemini_clients)} API key(s), model {ai_model_name} ({src})"
-        )
-    except Exception as e:
-        print(f"[WARN] Error initializing Google AI: {e}")
-        genai_client = None
-        gemini_clients = []
-        ai_model_name = None
-        ai_model = None
+init_ai_providers(_TXT_GROQ_KEYS, _TXT_OPENROUTER_KEYS)
+ai_model = AI_AVAILABLE  # tương thích code cũ: if ai_model
 
 # Tạo thư mục downloads nếu chưa có
 if not os.path.exists(DOWNLOADS_DIR):

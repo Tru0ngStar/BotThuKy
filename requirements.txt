@@ -1,6 +1,5 @@
 python-telegram-bot
-google-genai
-python-dotenv
+openai
 feedparser
 requests
 yt-dlp

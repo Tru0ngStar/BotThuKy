@@ -4,7 +4,7 @@ handlers/ai_chat.py — AI chatbot: SYSTEM_PROMPT, get_ai_response, ai_chat_hand
 from telegram import Update
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
-from config import gemini_clients, ai_model_name, generate_gemini_content
+from config import AI_AVAILABLE, generate_ai_chat
 from database import (
     get_ai_session_history,
     save_ai_session_history,
@@ -55,7 +55,7 @@ Bạn là Thư Ký — một chatbot dễ thương, vui vẻ, hoà đồng của
 2. Nếu được hỏi bằng tiếng Anh → trả lời tiếng Anh
 3. Câu trả lời ngắn gọn, dễ hiểu, KHÔNG dài dòng trừ khi được yêu cầu
 4. Không bịa thông tin khi không biết, thành thật nói "tớ không biết"
-5. Giữ vai trò chatbot của nhóm, KHÔNG nhận mình là AI khác (ChatGPT, Gemini...)
+5. Giữ vai trò chatbot của nhóm, KHÔNG nhận mình là AI khác (ChatGPT, Groq...)
 6. Khi có "Tin nhắn được reply", hãy dựa vào đó để thực hiện yêu cầu (dịch, tóm tắt, kiểm tra tin, giải thích...)
 """
 
@@ -102,39 +102,29 @@ def _build_prompt_with_reply(user_text: str, reply_msg, bot_id: int) -> str:
 
 
 async def get_ai_response(user_id: int, prompt: str) -> str:
-    """Lấy phản hồi từ Google AI, có kèm lịch sử phiên theo user."""
-    if not gemini_clients or not ai_model_name:
-        return "❌ AI service không khả dụng. Vui lòng cài đặt: pip install google-genai"
+    """Lấy phản hồi AI (Groq → OpenRouter), có kèm lịch sử phiên."""
+    if not AI_AVAILABLE:
+        return "❌ AI không khả dụng. Cài: pip install openai — và thêm groq:/openrouter: vào secrets.txt"
 
     try:
-        # Lấy lịch sử phiên cũ (nếu có)
         history = get_ai_session_history(user_id)
         history_block = f"Lịch sử trò chuyện gần đây:\n{history}\n\n" if history else ""
 
-        # Tạo prompt với SYSTEM_PROMPT + lịch sử
-        full_prompt = f"""{SYSTEM_PROMPT}
+        user_content = f"""{history_block}Tin nhắn mới của người dùng: {prompt}"""
 
-Các tin nhắn trước (nếu có):
-{history_block}
-
-Tin nhắn mới của người dùng: {prompt}"""
-
-        response = generate_gemini_content(ai_model_name, full_prompt)
-        reply_text = (response.text or "").strip()
+        reply_text = generate_ai_chat(SYSTEM_PROMPT, user_content)
         if not reply_text:
             return "❌ AI không trả lời được (có thể bị chặn nội dung)."
 
-        # Cập nhật lịch sử phiên (giữ không quá ~20 trao đổi để tránh quá dài)
         new_block = f"User: {prompt}\nBot: {reply_text}\n---\n"
         combined = (history + "\n" + new_block).strip() if history else new_block
-        # Cắt bớt nếu quá dài (giữ tối đa 4000 ký tự)
         if len(combined) > 4000:
             combined = combined[-4000:]
         save_ai_session_history(user_id, combined)
 
         return reply_text
     except Exception as e:
-        print(f"Error calling Google AI: {e}")
+        print(f"Error calling AI: {e}")
         return f"❌ Lỗi khi gọi AI: {str(e)}"
 
 
