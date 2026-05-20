@@ -14,6 +14,7 @@ from config import OWNER_ID
 from database import (
     delete_group,
     get_db_connection,
+    list_groups as list_groups_db,
     quiz_messages,
     set_group_status,
     upsert_active_group,
@@ -454,24 +455,51 @@ async def group_action_callback(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     if action == "group_leave":
+        now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
+        
+        # Lấy tên nhóm trước khi xóa
+        try:
+            chat_info = await context.bot.get_chat(chat_id)
+            left_title = chat_info.title or f"ID {chat_id}"
+        except Exception:
+            left_title = f"ID {chat_id}"
+
         try:
             await context.bot.leave_chat(chat_id)
         except Exception as e:
             err = str(e).lower()
-            # Nhóm deactivated hoặc bot đã bị kick → xóa DB luôn
-            if "deactivated" in err or "not found" in err or "kicked" in err or "chat_id_invalid" in err:
-                delete_group(chat_id)
-                await query.answer("Nhóm đã deactivated, đã xóa khỏi DB")
-                new_text = original_text + f"\n\n⚠️ **Nhóm đã deactivated** — xóa khỏi DB lúc {now_str}"
-                await query.edit_message_text(new_text, parse_mode=ParseMode.MARKDOWN)
+            if not ("deactivated" in err or "not found" in err or "kicked" in err or "chat_id_invalid" in err):
+                await query.answer("Không rời được", show_alert=True)
+                print(f"Lỗi leave_chat (leave): {e}")
                 return
-            await query.answer("Không rời được", show_alert=True)
-            print(f"Lỗi leave_chat (leave): {e}")
-            return
+
         delete_group(chat_id)
-        await query.answer("Đã rời nhóm")
-        new_text = original_text + f"\n\n🚪 **Đã rời nhóm và xóa khỏi DB** lúc {now_str}"
-        await query.edit_message_text(new_text, parse_mode=ParseMode.MARKDOWN)
+        await query.answer(f"Đã rời: {left_title}")
+
+        # Rebuild lại danh sách nhóm sau khi xóa
+        rows = list_groups_db(status="active")
+        if not rows:
+            await query.edit_message_text(
+                f"🚪 **Đã rời nhóm** `{left_title}` lúc {now_str}\n\n"
+                "😿 Không còn nhóm nào đang hoạt động.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        lines = [f"🚪 **Đã rời:** `{left_title}` lúc {now_str}\n\n📌 **Danh sách nhóm đang hoạt động:**\n"]
+        keyboard = []
+        for idx, (cid, title, added_by_id, added_by_username, added_at, status, approved_manually) in enumerate(rows, start=1):
+            title_disp = title or "(không có tên)"
+            tag = "👤 Thủ công" if int(approved_manually or 0) == 1 else "🤖 Auto"
+            lines.append(f"{idx}. {tag} — {title_disp}\n   ID: `{cid}`")
+            short_title = (title_disp[:20] + "…") if len(title_disp) > 20 else title_disp
+            keyboard.append([InlineKeyboardButton(f"🚪 Rời: {short_title}", callback_data=f"group_leave|{cid}")])
+
+        await query.edit_message_text(
+            "\n".join(lines),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=ParseMode.MARKDOWN,
+        )
         return
 
 
