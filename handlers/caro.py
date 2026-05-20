@@ -9,6 +9,7 @@ from config import OWNER_ID
 from database import (
     games, session_scores, caro_scores,
     get_caro_score, record_caro_result, get_db_connection,
+    get_global_caro_ranking, get_user_display_name,
 )
 from utils.helpers import get_member_name, resolve_user_identifier, is_board_full
 import sqlite3
@@ -173,33 +174,37 @@ async def xo_challenge(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(display_text, reply_markup=kb)
 
 
-async def rank_caro(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    if not chat or chat.type == "private":
-        await update.message.reply_text("🏆 Lệnh /rank chỉ dùng trong nhóm nha!")
-        return
-    chat_id = chat.id
-    rows = []
-    conn = get_db_connection()
-    if conn:
+async def _resolve_rank_display_name(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int | None,
+    user_id: int,
+    fallback: str,
+) -> str:
+    saved = get_user_display_name(user_id)
+    if saved:
+        return saved
+    if chat_id:
         try:
-            cursor = conn.cursor()
-            cursor.execute(
-                "SELECT user_id, caro_wins, total_games FROM user_caro_scores WHERE chat_id = ? ORDER BY caro_wins DESC, total_games DESC",
-                (chat_id,),
-            )
-            rows = cursor.fetchall()
-            cursor.close()
-            conn.close()
-        except sqlite3.Error as e:
-            print(f"Lỗi DB (/rank): {e}")
+            return await get_member_name(context, chat_id, user_id, fallback)
+        except Exception:
+            pass
+    try:
+        tg_user = await context.bot.get_chat(user_id)
+        return tg_user.full_name or tg_user.first_name or fallback
+    except Exception:
+        return fallback
+
+
+async def rank_caro(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Bảng xếp hạng Caro tổng (mọi nhóm), dùng được cả chat riêng."""
+    chat = update.effective_chat
+    chat_id = chat.id if chat and chat.type != "private" else None
+    rows = get_global_caro_ranking()
+
     if not rows:
-        chat_scores_map = caro_scores.get(chat_id, {})
-        rows = [(uid, data["wins"], data["total"]) for uid, data in chat_scores_map.items()]
-        rows.sort(key=lambda x: (-x[1], -x[2]))
-    if not rows:
-        await update.message.reply_text("😿 Nhóm chưa có dữ liệu Caro nào.")
+        await update.message.reply_text("😿 Chưa có dữ liệu Caro nào. Vào /caro chơi thử nha!")
         return
+
     ranking, prev_key, rank = [], None, 0
     for idx, (uid, wins, total) in enumerate(rows, start=1):
         key = (wins, total)
@@ -207,19 +212,24 @@ async def rank_caro(update: Update, context: ContextTypes.DEFAULT_TYPE):
             rank = idx
             prev_key = key
         ranking.append((rank, uid, wins, total))
+
     top = ranking[:10]
-    lines = ["🏆 Xếp hạng Caro trong nhóm:"]
+    lines = ["🏆 Xếp hạng Caro tổng (mọi nhóm):"]
     for rank_val, uid, wins, total in top:
-        name = await get_member_name(context, chat_id, uid, f"User {rank_val}")
-        lines.append(f"{rank_val}. {name} — {wins} điểm")
-    user_entry = next((item for item in ranking if item[1] == update.effective_user.id), None)
-    if user_entry and user_entry not in top:
-        rank_val, _, wins, _ = user_entry
+        name = await _resolve_rank_display_name(context, chat_id, uid, f"User {uid}")
+        lines.append(f"{rank_val}. {name} — {wins} điểm ({total} trận)")
+
+    user_id = update.effective_user.id
+    user_entry = next((item for item in ranking if item[1] == user_id), None)
+    top_uids = {item[1] for item in top}
+    if user_entry and user_id not in top_uids:
+        rank_val, _, wins, total = user_entry
         lines.append("")
-        lines.append(f"✨ Cậu đang đứng hạng #{rank_val} với {wins} điểm.")
+        lines.append(f"✨ Cậu đang hạng #{rank_val} với {wins} điểm ({total} trận).")
     elif not user_entry:
         lines.append("")
         lines.append("✨ Cậu chưa có trận nào, vào /caro chơi thử nha!")
+
     await update.message.reply_text("\n".join(lines))
 
 

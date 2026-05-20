@@ -204,6 +204,70 @@ def record_caro_result(chat_id: int, winner_id=None, loser_id=None, draw_players
             update_caro_score(loser_id, 0, 1, chat_id)
 
 
+def get_global_caro_ranking() -> list[tuple[int, int, int]]:
+    """Tổng điểm Caro mọi nhóm: [(user_id, wins, total_games), ...] xếp hạng giảm dần."""
+    aggregated: dict[int, dict[str, int]] = {}
+
+    conn = get_db_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT user_id, SUM(caro_wins), SUM(total_games)
+                FROM user_caro_scores
+                GROUP BY user_id
+                HAVING SUM(total_games) > 0
+                ORDER BY SUM(caro_wins) DESC, SUM(total_games) DESC
+                """
+            )
+            rows = cursor.fetchall()
+            cursor.close()
+            conn.close()
+            if rows:
+                return [(int(uid), int(wins or 0), int(total or 0)) for uid, wins, total in rows]
+        except sqlite3.Error as e:
+            print(f"Lỗi DB (get_global_caro_ranking): {e}")
+
+    for chat_scores_map in caro_scores.values():
+        for uid, data in chat_scores_map.items():
+            record = aggregated.setdefault(uid, {"wins": 0, "total": 0})
+            record["wins"] += data.get("wins", 0)
+            record["total"] += data.get("total", 0)
+
+    rows = [
+        (uid, record["wins"], record["total"])
+        for uid, record in aggregated.items()
+        if record["total"] > 0
+    ]
+    rows.sort(key=lambda x: (-x[1], -x[2]))
+    return rows
+
+
+def get_user_display_name(user_id: int) -> str | None:
+    """Lấy tên đã lưu từ user_info (RAM hoặc DB)."""
+    info = user_info.get(user_id)
+    if info and info.get("full_name"):
+        return info["full_name"]
+
+    conn = get_db_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT full_name FROM user_info WHERE user_id = ?",
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            if row and row[0]:
+                return row[0]
+        except sqlite3.Error as e:
+            print(f"Lỗi DB (get_user_display_name): {e}")
+    return None
+
+
 # =========================
 # AI SESSION HISTORY
 # =========================
