@@ -8,12 +8,21 @@ from database import init_db
 from handlers import admin, ai_chat, caro, media, misc, events
 
 
+async def _post_init(_application) -> None:
+    media.start_download_worker()
+
+
 def main():
     """Start bot"""
     print("🤖 Starting bot...")
     init_db()
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .post_init(_post_init)
+        .build()
+    )
 
     # === Commands ===
     # Misc
@@ -27,7 +36,6 @@ def main():
     # Admin
     app.add_handler(CommandHandler("admins",    admin.admins))
     app.add_handler(CommandHandler("warn",      admin.warn))
-    app.add_handler(CommandHandler("rules",     admin.rules))
     app.add_handler(CommandHandler("ban",       admin.ban))
     app.add_handler(CommandHandler("unban",     admin.unban))
     app.add_handler(CommandHandler("check",     admin.check_user))

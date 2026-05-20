@@ -1,13 +1,17 @@
 """
-handlers/ai_chat.py — AI chatbot: SYSTEM_PROMPT, get_ai_response, ai_chat_handler, reset_ai_session
+handlers/ai_chat.py — AI chatbot: dynamic prompt, JSON context, ai_chat_handler
 """
+from datetime import datetime
+
+from lunarcalendar import Converter, Solar
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
-from config import OWNER_ID
 from utils import ai_client
 from utils.ai_client import AI_AVAILABLE, generate_ai_chat
 from database import (
+    MAX_CONTEXT_CHARS,
+    MAX_CONTEXT_LINES,
     get_ai_session_history,
     save_ai_session_history,
     get_db_connection,
@@ -16,9 +20,9 @@ from database import (
 import sqlite3
 
 # =========================
-# SYSTEM PROMPT
+# SYSTEM PROMPT (nội dung tĩnh)
 # =========================
-SYSTEM_PROMPT = """
+_STATIC_SYSTEM_PROMPT = """
 Bạn là Thư Ký — một chatbot dễ thương, vui vẻ, hoà đồng của nhóm Telegram.
 
 ## THÔNG TIN VỀ BOT
@@ -62,6 +66,58 @@ Bạn là Thư Ký — một chatbot dễ thương, vui vẻ, hoà đồng của
 """
 
 
+def get_dynamic_system_prompt(user_name: str = "", group_name: str = "") -> str:
+    """Ghép prompt tĩnh + thời gian thực + âm lịch + tên user/nhóm."""
+    now = datetime.now()
+    solar = Solar(now.year, now.month, now.day)
+    lunar = Converter.Solar2Lunar(solar)
+
+    weekdays = (
+        "Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm",
+        "Thứ Sáu", "Thứ Bảy", "Chủ Nhật",
+    )
+    weekday = weekdays[now.weekday()]
+
+    dynamic = f"""
+
+## THỜI GIAN & NGỮ CẢNH
+- Ngày giờ hiện tại: {weekday}, {now.strftime("%d/%m/%Y %H:%M")}
+- Âm lịch: ngày {lunar.day} tháng {lunar.month} năm {lunar.year}
+"""
+    if user_name:
+        dynamic += f"- Người đang chat: {user_name}\n"
+    if group_name:
+        dynamic += f"- Nhóm: {group_name}\n"
+
+    return _STATIC_SYSTEM_PROMPT.strip() + dynamic
+
+
+def _trim_context(history: list[dict]) -> list[dict]:
+    """Xóa dần tin cũ nếu vượt MAX_CONTEXT_LINES hoặc MAX_CONTEXT_CHARS."""
+    trimmed = list(history)
+    while len(trimmed) > MAX_CONTEXT_LINES:
+        trimmed.pop(0)
+    while trimmed and sum(len(str(m.get("content", ""))) for m in trimmed) > MAX_CONTEXT_CHARS:
+        trimmed.pop(0)
+    return trimmed
+
+
+def _build_messages_list(
+    system_prompt: str,
+    history: list[dict],
+    user_content: str,
+) -> list[dict]:
+    """Ghép system + history + tin mới thành list OpenAI-style."""
+    messages: list[dict] = [{"role": "system", "content": system_prompt}]
+    for item in history:
+        role = item.get("role")
+        content = item.get("content")
+        if role in ("user", "assistant") and content:
+            messages.append({"role": role, "content": str(content)})
+    messages.append({"role": "user", "content": user_content})
+    return messages
+
+
 def _extract_message_text(msg) -> str | None:
     """Lấy nội dung chữ từ tin nhắn (text hoặc caption)."""
     if not msg:
@@ -103,103 +159,96 @@ def _build_prompt_with_reply(user_text: str, reply_msg, bot_id: int) -> str:
     )
 
 
-async def _is_admin_or_owner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Chủ bot hoặc admin nhóm."""
-    user = update.effective_user
-    if user.id == OWNER_ID:
-        return True
-    chat = update.effective_chat
-    if chat.type == "private":
-        return user.id == OWNER_ID
-    member = await context.bot.get_chat_member(chat.id, user.id)
-    return member.status in ("creator", "administrator")
-
-
-async def _is_admin_or_owner_query(query, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    user = query.from_user
-    if user.id == OWNER_ID:
-        return True
-    chat = query.message.chat
-    if chat.type == "private":
-        return user.id == OWNER_ID
-    member = await context.bot.get_chat_member(chat.id, user.id)
-    return member.status in ("creator", "administrator")
-
-
 async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Lệnh /model — chọn model cho mọi nhóm."""
-    if not await _is_admin_or_owner(update, context):
-        await update.message.reply_text("⛔ Chỉ admin nhóm hoặc chủ bot mới dùng được /model")
-        return
-
-    current_label = ai_client.get_provider_label(ai_client.get_provider())
+    """Lệnh /model — mỗi user tự chọn model AI."""
+    user_id = update.effective_user.id
+    current_label = ai_client.get_provider_label(ai_client.get_provider(user_id))
 
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("⚡ Groq", callback_data="ai_model|groq"),
             InlineKeyboardButton("🧠 OpenRouter", callback_data="ai_model|openrouter"),
         ],
+        [
+            InlineKeyboardButton("✨ Gemini", callback_data="ai_model|gemini"),
+            InlineKeyboardButton("🔄 Tự động", callback_data="ai_model|auto"),
+        ],
     ])
     await update.message.reply_text(
-        f"🤖 **Chọn model AI** (áp dụng mọi nhóm)\n\nĐang dùng: **{current_label}**",
+        f"🤖 **Chọn model AI** (chỉ áp dụng cho cậu)\n\nĐang dùng: **{current_label}**",
         reply_markup=keyboard,
         parse_mode=ParseMode.MARKDOWN,
     )
 
 
 async def model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Xử lý nút chọn model — áp dụng mọi nhóm."""
+    """Xử lý nút chọn model — lưu theo từng user."""
     query = update.callback_query
     if not query.data or not query.data.startswith("ai_model|"):
         return
 
-    if query.from_user.id != OWNER_ID and not await _is_admin_or_owner_query(query, context):
-        await query.answer("⛔ Chỉ admin hoặc chủ bot!", show_alert=True)
-        return
-
+    user_id = query.from_user.id
     provider = query.data.split("|", 1)[1]
-    if provider not in ("groq", "openrouter"):
+    if provider not in ("groq", "openrouter", "gemini", "auto"):
         await query.answer("Lựa chọn không hợp lệ", show_alert=True)
         return
 
     has_groq = any(p.label.startswith("Groq") for p in ai_client.ai_providers)
     has_or = any(p.label.startswith("OpenRouter") for p in ai_client.ai_providers)
+    has_gemini = bool(ai_client.gemini_keys)
+
     if provider == "groq" and not has_groq:
         await query.answer("Chưa có key Groq trong secrets.txt", show_alert=True)
         return
     if provider == "openrouter" and not has_or:
         await query.answer("Chưa có key OpenRouter trong secrets.txt", show_alert=True)
         return
+    if provider == "gemini" and not has_gemini:
+        await query.answer("Chưa có key Gemini trong secrets.txt", show_alert=True)
+        return
 
-    ai_client.set_provider(provider)
-    label = ai_client.get_provider_label(provider)
+    if provider == "auto":
+        ai_client.set_provider(None, user_id)
+        label = ai_client.get_provider_label(None)
+    else:
+        ai_client.set_provider(provider, user_id)
+        label = ai_client.get_provider_label(provider)
+
     await query.answer(f"Đã đổi → {label}")
     await query.edit_message_text(
-        f"✅ Model **mọi nhóm**: **{label}**",
+        f"✅ Model của cậu: **{label}**",
         parse_mode=ParseMode.MARKDOWN,
     )
 
 
-async def get_ai_response(user_id: int, prompt: str, chat_id: int | None = None) -> str:
-    """Lấy phản hồi AI (Groq → OpenRouter), có kèm lịch sử phiên."""
+async def get_ai_response(
+    user_id: int,
+    prompt: str,
+    chat_id: int | None = None,
+    user_name: str = "",
+    group_name: str = "",
+) -> str:
+    """Lấy phản hồi AI (Groq → OpenRouter → Gemini), context dạng list."""
     if not AI_AVAILABLE:
-        return "❌ AI không khả dụng. Cài: pip install openai — và thêm groq:/openrouter: vào secrets.txt"
+        return (
+            "❌ AI không khả dụng. Cài: pip install openai google-genai — "
+            "và thêm groq:/openrouter:/gemini: vào secrets.txt"
+        )
 
     try:
-        history = get_ai_session_history(user_id)
-        history_block = f"Lịch sử trò chuyện gần đây:\n{history}\n\n" if history else ""
+        history = _trim_context(get_ai_session_history(user_id))
+        system_prompt = get_dynamic_system_prompt(user_name, group_name)
+        messages = _build_messages_list(system_prompt, history, prompt)
 
-        user_content = f"""{history_block}Tin nhắn mới của người dùng: {prompt}"""
-
-        reply_text = generate_ai_chat(SYSTEM_PROMPT, user_content, chat_id=chat_id)
+        reply_text = await generate_ai_chat(messages, chat_id=chat_id, user_id=user_id)
         if not reply_text:
             return "❌ AI không trả lời được (có thể bị chặn nội dung)."
 
-        new_block = f"User: {prompt}\nBot: {reply_text}\n---\n"
-        combined = (history + "\n" + new_block).strip() if history else new_block
-        if len(combined) > 4000:
-            combined = combined[-4000:]
-        save_ai_session_history(user_id, combined)
+        new_history = history + [
+            {"role": "user", "content": prompt},
+            {"role": "assistant", "content": reply_text},
+        ]
+        save_ai_session_history(user_id, _trim_context(new_history))
 
         return reply_text
     except Exception as e:
@@ -207,19 +256,18 @@ async def get_ai_response(user_id: int, prompt: str, chat_id: int | None = None)
         print(f"Error calling AI: {e}")
         if len(err) > 200:
             err = err[:200] + "..."
-        return f"❌ Lỗi AI: {err}\n\n💡 Kiểm tra secrets.txt (groq: / openrouter:) và pip install openai"
+        return (
+            f"❌ Lỗi AI: {err}\n\n"
+            "💡 Kiểm tra secrets.txt (groq:/openrouter:/gemini:) "
+            "và pip install openai google-genai"
+        )
 
 
 async def ai_chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Xử lý AI chat khi bot được tag hoặc reply.
-    
-    Returns True nếu đã xử lý (để answer_handler biết mà return).
-    Returns False nếu không phải AI chat.
-    """
+    """Xử lý AI chat khi bot được tag hoặc reply."""
     message = update.message
     text = message.text or ""
 
-    # Kiểm tra xem bot có được tag không
     bot_mentioned = False
     if message.entities:
         for entity in message.entities:
@@ -238,13 +286,11 @@ async def ai_chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                         text = text.replace(mention_text, "").strip()
                     break
 
-    # Kiểm tra xem có reply bot không
     bot_replied = False
     if message.reply_to_message:
         if message.reply_to_message.from_user.id == context.bot.id:
             bot_replied = True
 
-    # Nếu bot được tag hoặc reply, xử lý AI chat
     if bot_mentioned or bot_replied:
         reply_msg = message.reply_to_message
         replied_text = _extract_message_text(reply_msg) if reply_msg else None
@@ -264,14 +310,23 @@ async def ai_chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             context.bot.id,
         )
 
-        # Hiển thị "đang typing"
         await context.bot.send_chat_action(chat_id=message.chat.id, action="typing")
 
-        # Lấy phản hồi từ AI (theo phiên của từng user)
-        user_id = message.from_user.id
-        ai_response = await get_ai_response(user_id, prompt, chat_id=message.chat.id)
+        user = message.from_user
+        user_name = user.full_name or ""
+        group_name = ""
+        if message.chat.type in ("group", "supergroup"):
+            group_name = message.chat.title or ""
 
-        # Trả lời
+        user_id = user.id
+        ai_response = await get_ai_response(
+            user_id,
+            prompt,
+            chat_id=message.chat.id,
+            user_name=user_name,
+            group_name=group_name,
+        )
+
         await message.reply_text(ai_response)
         return True
 
@@ -283,7 +338,6 @@ async def reset_ai_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
 
-    # Xóa trong DB
     conn = get_db_connection()
     if conn:
         try:
@@ -295,7 +349,6 @@ async def reset_ai_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except sqlite3.Error as e:
             print(f"Lỗi DB (reset_ai_session): {e}")
 
-    # Xóa trong bộ nhớ tạm
     if user_id in session_histories:
         del session_histories[user_id]
 

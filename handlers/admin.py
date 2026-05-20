@@ -1,5 +1,5 @@
 """
-handlers/admin.py — Admin commands: warn, ban, unban, check, admins, rules
+handlers/admin.py — Admin commands: warn, ban, unban, check, admins
 """
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -75,14 +75,6 @@ async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += "\n🚫 Đã đạt 3 cảnh báo!"
 
     await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
-
-
-async def rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Hiển thị nội quy nhóm"""
-    rules_text = """📋 **NỘI QUY NHÓM**
-You Are Gay !!!
-⚠️ Vi phạm sẽ bị cảnh báo hoặc kick khỏi nhóm!"""
-    await update.message.reply_text(rules_text, parse_mode=ParseMode.MARKDOWN)
 
 
 async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):

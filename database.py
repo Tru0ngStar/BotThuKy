@@ -1,9 +1,13 @@
 """
 database.py — SQLite (thuky.db) + fallback in-memory storage
 """
+import json
 import os
 import sqlite3
 from datetime import datetime
+
+MAX_CONTEXT_LINES = 15
+MAX_CONTEXT_CHARS = 5000
 
 # =========================
 # DB path & timestamp parsing (AFK duration cần datetime)
@@ -39,7 +43,7 @@ user_afk = {}
 games = {}
 quiz_messages = {}
 user_info = {}  # {user_id: {'full_name': '...', 'username': '...'}}
-session_histories = {}  # {user_id: "history text"}
+session_histories = {}  # {user_id: [{"role": "...", "content": "..."}, ...]}
 caro_scores = {}  # {chat_id: {user_id: {"wins": ..., "total": ...}}}
 session_scores = {}  # Theo dõi số trận thắng trong một phiên Caro 3x3
 
@@ -200,11 +204,103 @@ def record_caro_result(chat_id: int, winner_id=None, loser_id=None, draw_players
             update_caro_score(loser_id, 0, 1, chat_id)
 
 
+def get_global_caro_ranking() -> list[tuple[int, int, int]]:
+    """Tổng điểm Caro mọi nhóm: [(user_id, wins, total_games), ...] xếp hạng giảm dần."""
+    aggregated: dict[int, dict[str, int]] = {}
+
+    conn = get_db_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT user_id, SUM(caro_wins), SUM(total_games)
+                FROM user_caro_scores
+                GROUP BY user_id
+                HAVING SUM(total_games) > 0
+                ORDER BY SUM(caro_wins) DESC, SUM(total_games) DESC
+                """
+            )
+            rows = cursor.fetchall()
+            cursor.close()
+            conn.close()
+            if rows:
+                return [(int(uid), int(wins or 0), int(total or 0)) for uid, wins, total in rows]
+        except sqlite3.Error as e:
+            print(f"Lỗi DB (get_global_caro_ranking): {e}")
+
+    for chat_scores_map in caro_scores.values():
+        for uid, data in chat_scores_map.items():
+            record = aggregated.setdefault(uid, {"wins": 0, "total": 0})
+            record["wins"] += data.get("wins", 0)
+            record["total"] += data.get("total", 0)
+
+    rows = [
+        (uid, record["wins"], record["total"])
+        for uid, record in aggregated.items()
+        if record["total"] > 0
+    ]
+    rows.sort(key=lambda x: (-x[1], -x[2]))
+    return rows
+
+
+def get_user_display_name(user_id: int) -> str | None:
+    """Lấy tên đã lưu từ user_info (RAM hoặc DB)."""
+    info = user_info.get(user_id)
+    if info and info.get("full_name"):
+        return info["full_name"]
+
+    conn = get_db_connection()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT full_name FROM user_info WHERE user_id = ?",
+                (user_id,),
+            )
+            row = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            if row and row[0]:
+                return row[0]
+        except sqlite3.Error as e:
+            print(f"Lỗi DB (get_user_display_name): {e}")
+    return None
+
+
 # =========================
 # AI SESSION HISTORY
 # =========================
-def get_ai_session_history(user_id: int) -> str:
-    """Lấy lịch sử phiên AI của user từ SQLite (hoặc bộ nhớ tạm)."""
+def _trim_history_list(history: list) -> list:
+    """Cắt sliding window: xóa phần tử đầu khi vượt giới hạn."""
+    trimmed = list(history)
+    while len(trimmed) > MAX_CONTEXT_LINES:
+        trimmed.pop(0)
+    while trimmed and sum(len(str(m.get("content", ""))) for m in trimmed) > MAX_CONTEXT_CHARS:
+        trimmed.pop(0)
+    return trimmed
+
+
+def _parse_history_raw(raw) -> list:
+    if not raw:
+        return []
+    if isinstance(raw, list):
+        return _trim_history_list(raw)
+    text = raw.decode() if isinstance(raw, bytes) else str(raw)
+    text = text.strip()
+    if not text:
+        return []
+    try:
+        data = json.loads(text)
+        if isinstance(data, list):
+            return _trim_history_list(data)
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return []
+
+
+def get_ai_session_history(user_id: int) -> list:
+    """Lấy lịch sử phiên AI (list message) từ SQLite hoặc bộ nhớ tạm."""
     conn = get_db_connection()
     if conn:
         try:
@@ -213,15 +309,18 @@ def get_ai_session_history(user_id: int) -> str:
             row = cursor.fetchone()
             cursor.close()
             conn.close()
-            return row[0] if row and row[0] else ""
+            if row and row[0]:
+                return _parse_history_raw(row[0])
         except sqlite3.Error as e:
             print(f"Lỗi DB (get_ai_session_history): {e}")
-    return session_histories.get(user_id, "")
+    return _parse_history_raw(session_histories.get(user_id))
 
 
-def save_ai_session_history(user_id: int, history: str) -> None:
-    """Lưu lịch sử phiên AI của user vào SQLite (hoặc bộ nhớ tạm)."""
-    session_histories[user_id] = history
+def save_ai_session_history(user_id: int, history: list) -> None:
+    """Lưu lịch sử phiên AI (JSON list) vào SQLite hoặc bộ nhớ tạm."""
+    trimmed = _trim_history_list(history)
+    session_histories[user_id] = trimmed
+    payload = json.dumps(trimmed, ensure_ascii=False)
     conn = get_db_connection()
     if not conn:
         return
@@ -235,7 +334,7 @@ def save_ai_session_history(user_id: int, history: str) -> None:
                 history = excluded.history,
                 last_updated = CURRENT_TIMESTAMP
             """,
-            (user_id, history),
+            (user_id, payload),
         )
         conn.commit()
         cursor.close()
