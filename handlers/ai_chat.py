@@ -1,14 +1,19 @@
 """
-handlers/ai_chat.py — AI chatbot: dynamic prompt, JSON context, ai_chat_handler
+handlers/ai_chat.py — AI chatbot: dynamic prompt, JSON context, ai_chat_handler, vision
 """
+import mimetypes
+import os
+import sqlite3
+import tempfile
 from datetime import datetime
 
 from lunarcalendar import Converter, Solar
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
+from config import DOWNLOADS_DIR
 from utils import ai_client
-from utils.ai_client import AI_AVAILABLE, generate_ai_chat
+from utils.ai_client import AI_AVAILABLE, generate_ai_chat, gemini_analyze_image
 from database import (
     MAX_CONTEXT_CHARS,
     MAX_CONTEXT_LINES,
@@ -17,7 +22,7 @@ from database import (
     get_db_connection,
     session_histories,
 )
-import sqlite3
+
 
 # =========================
 # SYSTEM PROMPT (nội dung tĩnh)
@@ -159,6 +164,51 @@ def _build_prompt_with_reply(user_text: str, reply_msg, bot_id: int) -> str:
     )
 
 
+# Phần bổ sung prompt khi phân tích ảnh (Gemini vision)
+_VISION_CONTEXT_ADDON = """
+
+## ẢNH ĐÍNH KÈM (VISION)
+- Người dùng gửi ảnh kèm yêu cầu và/hoặc ngữ cảnh tin reply.
+- Hãy xem ảnh và làm đúng yêu cầu: mô tả, OCR, giải thích, v.v.
+- Luôn trả lời **tiếng Việt**, xưng **tớ / cậu** như vai Thư Ký.
+- Ưu tiên ngắn gọn nếu cậu không yêu cầu chi tiết dài.
+"""
+
+
+def _mention_bot_from_caption(
+    caption: str,
+    caption_entities,
+    bot_username: str | None,
+    bot_id: int,
+) -> tuple[bool, str]:
+    """Giống logic tag bot trên tin text, nhưng dùng caption + caption_entities."""
+    text = caption or ""
+    if not caption_entities:
+        return False, text.strip()
+
+    bot_mentioned = False
+    out = text
+    for entity in caption_entities:
+        if entity.type == "mention":
+            mention_text = text[entity.offset : entity.offset + entity.length]
+            if bot_username and f"@{bot_username}" in mention_text:
+                bot_mentioned = True
+                out = out.replace(mention_text, "").strip()
+                break
+        elif entity.type == "text_mention":
+            if entity.user and entity.user.id == bot_id:
+                bot_mentioned = True
+                mention_text = (
+                    text[entity.offset : entity.offset + entity.length]
+                    if entity.length
+                    else ""
+                )
+                if mention_text:
+                    out = out.replace(mention_text, "").strip()
+                break
+    return bot_mentioned, out
+
+
 async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lệnh /model — mỗi user tự chọn model AI."""
     user_id = update.effective_user.id
@@ -263,6 +313,58 @@ async def get_ai_response(
         )
 
 
+async def get_ai_image_response(
+    user_id: int,
+    prompt: str,
+    image_bytes: bytes,
+    mime_type: str,
+    chat_id: int | None = None,
+    user_name: str = "",
+    group_name: str = "",
+) -> str:
+    """Phân tích ảnh bằng Gemini vision, cập nhật lịch sử phiên (chỉ text)."""
+    if not ai_client.gemini_keys:
+        return (
+            "❌ Phân tích ảnh chỉ dùng Gemini. Thêm gemini:AIza... vào secrets.txt "
+            "và cài: pip install google-genai"
+        )
+    if not ai_client.GEMINI_SDK_AVAILABLE:
+        return "❌ Chưa cài google-genai. Chạy: pip install google-genai"
+
+    try:
+        system_prompt = (
+            get_dynamic_system_prompt(user_name, group_name).strip() + _VISION_CONTEXT_ADDON
+        )
+        instruct = prompt.strip() or (
+            "Cậu xem giúp tớ ảnh này có gì, mô tả ngắn gọn và hữu ích bằng tiếng Việt nhé."
+        )
+
+        reply_text = await gemini_analyze_image(
+            system_prompt,
+            instruct,
+            image_bytes,
+            mime_type,
+        )
+        if not reply_text:
+            return "❌ Không nhận được nội dung từ Gemini."
+
+        history_prompt = f"[Ảnh] {instruct}" if len(instruct) < 3200 else instruct[:3200] + "..."
+        history = _trim_context(get_ai_session_history(user_id))
+        new_history = history + [
+            {"role": "user", "content": history_prompt},
+            {"role": "assistant", "content": reply_text},
+        ]
+        save_ai_session_history(user_id, _trim_context(new_history))
+
+        return reply_text
+    except Exception as e:
+        err = str(e)
+        print(f"Error Gemini vision: {e}")
+        if len(err) > 200:
+            err = err[:200] + "..."
+        return f"❌ Lỗi phân tích ảnh: {err}\n\n💡 Kiểm tra key Gemini và quota."
+
+
 async def ai_chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Xử lý AI chat khi bot được tag hoặc reply."""
     message = update.message
@@ -331,6 +433,103 @@ async def ai_chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return True
 
     return False
+
+
+async def image_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ảnh (photo / ảnh gửi dạng file): chỉ khi tag bot trong caption hoặc reply tin bot — Gemini vision."""
+    message = update.message
+    if not message:
+        return
+
+    caption = message.caption or ""
+    caption_entities = message.caption_entities
+
+    bot_mentioned, stripped_after_mention = _mention_bot_from_caption(
+        caption,
+        caption_entities,
+        context.bot.username,
+        context.bot.id,
+    )
+
+    bot_replied = bool(
+        message.reply_to_message
+        and message.reply_to_message.from_user.id == context.bot.id
+    )
+
+    if not bot_mentioned and not bot_replied:
+        return
+
+    reply_src = message.reply_to_message
+    user_part = stripped_after_mention.strip() if bot_mentioned else ""
+
+    prompt = _build_prompt_with_reply(user_part, reply_src, context.bot.id)
+    if not prompt.strip():
+        prompt = (
+            "Cậu xem ảnh và giúp tớ: mô tả chủ đề chính, chi tiết nổi bật "
+            "(nếu có chữ trong ảnh thì có thể tóm hoặc trích OCR). Trả lời tiếng Việt."
+        )
+
+    mime = "image/jpeg"
+    file_id = ""
+    suffix = ".jpg"
+
+    if message.photo:
+        file_id = message.photo[-1].file_id
+    elif message.document:
+        doc = message.document
+        mime = doc.mime_type or ""
+        if not mime.startswith("image/"):
+            return
+        file_id = doc.file_id
+        guessed = mimetypes.guess_extension(mime, strict=False)
+        suffix = guessed if guessed else ".img"
+    else:
+        return
+
+    tmp_path: str | None = None
+    try:
+        await context.bot.send_chat_action(chat_id=message.chat.id, action="typing")
+        fd, tmp_path = tempfile.mkstemp(
+            suffix=suffix,
+            prefix="thuky_vis_",
+            dir=DOWNLOADS_DIR if os.path.isdir(DOWNLOADS_DIR) else None,
+        )
+        os.close(fd)
+
+        tg_file = await context.bot.get_file(file_id)
+        await tg_file.download_to_drive(tmp_path)
+
+        with open(tmp_path, "rb") as f:
+            image_bytes = f.read()
+
+        user = message.from_user
+        user_name = user.full_name or ""
+        group_name = ""
+        if message.chat.type in ("group", "supergroup"):
+            group_name = message.chat.title or ""
+
+        ai_response = await get_ai_image_response(
+            user.id,
+            prompt,
+            image_bytes,
+            mime,
+            chat_id=message.chat.id,
+            user_name=user_name,
+            group_name=group_name,
+        )
+        await message.reply_text(ai_response)
+    except Exception as e:
+        print(f"Lỗi image_handler: {e}")
+        err = str(e)
+        if len(err) > 180:
+            err = err[:180] + "..."
+        await message.reply_text(f"❌ Không xử lý được ảnh: {err}")
+    finally:
+        if tmp_path and os.path.isfile(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
 
 async def reset_ai_session(update: Update, context: ContextTypes.DEFAULT_TYPE):

@@ -234,6 +234,83 @@ async def get_gemini_response(messages: list[dict]) -> str:
     return await loop.run_in_executor(None, _call_gemini_sync, key, messages)
 
 
+def _gemini_image_part(image_bytes: bytes, mime_type: str):
+    """Part ảnh — tương thích các bản SDK."""
+    if hasattr(genai_types.Part, "from_bytes"):
+        return genai_types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+    return genai_types.Part(
+        inline_data=genai_types.Blob(data=image_bytes, mime_type=mime_type)
+    )
+
+
+def _call_gemini_vision_sync(
+    api_key: str,
+    system_instruction: str,
+    user_instruction: str,
+    image_bytes: bytes,
+    mime_type: str,
+) -> str:
+    client = genai.Client(api_key=api_key)
+    instruct = (
+        user_instruction.strip()
+        or "Xem ảnh và trả lời đúng yêu cầu. Trả lời tiếng Việt."
+    )
+
+    contents = [
+        genai_types.Content(
+            role="user",
+            parts=[
+                genai_types.Part(text=instruct),
+                _gemini_image_part(image_bytes, mime_type),
+            ],
+        )
+    ]
+
+    config_kwargs: dict = {"temperature": 0.7}
+    if system_instruction:
+        config_kwargs["system_instruction"] = system_instruction
+
+    response = client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=contents,
+        config=genai_types.GenerateContentConfig(**config_kwargs),
+    )
+    text = (response.text or "").strip()
+    if not text:
+        raise RuntimeError("Gemini trả về rỗng")
+    return text
+
+
+async def gemini_analyze_image(
+    system_instruction: str,
+    user_instruction: str,
+    image_bytes: bytes,
+    mime_type: str,
+) -> str:
+    """Phân tích ảnh bằng Gemini (xoay key giống get_gemini_response)."""
+    global gemini_key_index
+
+    if not gemini_keys:
+        raise RuntimeError("Chưa cấu hình Gemini (gemini: trong secrets.txt)")
+    if not GEMINI_SDK_AVAILABLE:
+        raise RuntimeError("Chưa cài google-genai. Chạy: pip install google-genai")
+
+    async with _gemini_lock:
+        key = gemini_keys[gemini_key_index % len(gemini_keys)]
+        gemini_key_index = (gemini_key_index + 1) % len(gemini_keys)
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None,
+        _call_gemini_vision_sync,
+        key,
+        system_instruction,
+        user_instruction,
+        image_bytes,
+        mime_type,
+    )
+
+
 async def _try_openai_providers(messages: list[dict], user_id: int | None) -> str:
     global _last_provider_idx
     ordered = _ordered_providers(user_id)

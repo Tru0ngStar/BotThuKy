@@ -62,6 +62,14 @@ def main():
         events.welcome_new_member
     ))
     app.add_handler(MessageHandler(
+        filters.PHOTO & ~filters.COMMAND,
+        ai_chat.image_handler,
+    ))
+    app.add_handler(MessageHandler(
+        filters.Document.IMAGE & ~filters.COMMAND,
+        ai_chat.image_handler,
+    ))
+    app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND,
         events.answer_handler
     ))
