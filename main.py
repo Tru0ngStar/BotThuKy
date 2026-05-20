@@ -13,7 +13,7 @@ from telegram.ext import (
 
 from config import BOT_TOKEN
 from database import init_db
-from handlers import admin, ai_chat, caro, media, misc, events
+from handlers import admin, ai_chat, caro, media, misc, events, group_manager
 
 
 async def _post_init(_application) -> None:
@@ -73,8 +73,14 @@ def main():
     )
     app.add_handler(
         ChatMemberHandler(
-            events.greet_new_group,
+            events.handle_my_chat_member,
             ChatMemberHandler.MY_CHAT_MEMBER,
+        )
+    )
+    app.add_handler(
+        CallbackQueryHandler(
+            events.group_action_callback,
+            pattern=r"^group_(accept|reject|leave)\|",
         )
     )
     app.add_handler(
@@ -98,6 +104,11 @@ def main():
 
     # === Callback router ===
     app.add_handler(CallbackQueryHandler(caro.callback_router))
+
+    # === Owner group manager (private only) ===
+    app.add_handler(CommandHandler("gr", group_manager.list_groups))
+    app.add_handler(CommandHandler("leave", group_manager.leave_group))
+    app.add_handler(CommandHandler("addgr", group_manager.add_group_manually))
 
     print("✅ Bot is running!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)

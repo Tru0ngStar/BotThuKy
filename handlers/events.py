@@ -10,7 +10,16 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 
-from database import get_db_connection, user_afk, user_info, quiz_messages
+from config import OWNER_ID
+from database import (
+    delete_group,
+    get_db_connection,
+    quiz_messages,
+    set_group_status,
+    upsert_active_group,
+    user_afk,
+    user_info,
+)
 from utils.helpers import format_duration
 from handlers.ai_chat import ai_chat_handler
 from handlers.media import download_video
@@ -261,6 +270,137 @@ async def answer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await check_afk(update, context)
 
 
+def _fmt_username(username: str | None) -> str:
+    if not username:
+        return "(không có)"
+    return f"@{username}" if not username.startswith("@") else username
+
+
+async def _notify_owner_new_group(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    chat_title: str,
+    added_by,
+):
+    added_by_id = getattr(added_by, "id", None)
+    added_by_username = getattr(added_by, "username", None)
+    added_by_full_name = getattr(added_by, "full_name", None) or "Người dùng"
+
+    now = datetime.now().strftime("%d/%m/%Y %H:%M")
+    text = (
+        "🧾 **Bot được thêm vào nhóm mới**\n\n"
+        f"- Nhóm: **{chat_title}**\n"
+        f"- ID nhóm: `{chat_id}`\n"
+        f"- Người thêm bot: **{added_by_full_name}** ({_fmt_username(added_by_username)})\n"
+        f"- ID người thêm: `{added_by_id}`\n"
+        f"- Thời gian: {now}\n"
+    )
+
+    kb = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("✅ Chấp nhận", callback_data=f"group_accept|{chat_id}"),
+                InlineKeyboardButton("❌ Từ chối", callback_data=f"group_reject|{chat_id}"),
+            ]
+        ]
+    )
+    await context.bot.send_message(OWNER_ID, text, reply_markup=kb, parse_mode=ParseMode.MARKDOWN)
+
+
+async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    MY_CHAT_MEMBER: phát hiện bot được add / bị kick / rời nhóm.
+    - Khi được add: lưu DB (pending) + báo owner kèm nút accept/reject.
+    - Khi bị kick/left: set inactive.
+    """
+    chat_member = getattr(update, "chat_member", None)
+    if not chat_member:
+        return
+
+    new = chat_member.new_chat_member
+    old = chat_member.old_chat_member
+
+    if not new or new.user.id != context.bot.id:
+        return
+
+    chat = chat_member.chat
+    if chat.type not in ("group", "supergroup"):
+        return
+
+    new_status = new.status
+    old_status = old.status if old else None
+
+    became_member = new_status in ("member", "administrator")
+    was_member = old_status in ("member", "administrator")
+
+    if became_member and not was_member:
+        added_by = getattr(chat_member, "from_user", None)
+        upsert_active_group(
+            chat_id=chat.id,
+            chat_title=chat.title,
+            added_by_id=getattr(added_by, "id", None),
+            added_by_username=getattr(added_by, "username", None),
+            status="pending",
+            approved_manually=0,
+        )
+        try:
+            await _notify_owner_new_group(update, context, chat.id, chat.title or "(không có tên)", added_by)
+        except Exception as e:
+            print(f"Lỗi notify_owner_new_group: {e}")
+        return
+
+    # Bot bị kick / rời nhóm
+    if new_status in ("left", "kicked"):
+        set_group_status(chat.id, "inactive")
+
+
+async def group_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Callback cho owner: accept/reject/leave group."""
+    query = update.callback_query
+    if not query or not query.data:
+        return
+
+    if query.from_user.id != OWNER_ID:
+        await query.answer("⛔ Chỉ owner dùng được.", show_alert=True)
+        return
+
+    try:
+        action, chat_id_str = query.data.split("|", 1)
+        chat_id = int(chat_id_str)
+    except Exception:
+        await query.answer("Dữ liệu không hợp lệ", show_alert=True)
+        return
+
+    if action == "group_accept":
+        set_group_status(chat_id, "active")
+        await query.answer("Đã chấp nhận")
+        await query.edit_message_text("✅ Đã chấp nhận", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    if action == "group_reject":
+        try:
+            await context.bot.leave_chat(chat_id)
+        except Exception as e:
+            print(f"Lỗi leave_chat (reject): {e}")
+        set_group_status(chat_id, "inactive")
+        await query.answer("Đã từ chối")
+        await query.edit_message_text("❌ Đã từ chối và rời nhóm", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    if action == "group_leave":
+        try:
+            await context.bot.leave_chat(chat_id)
+        except Exception as e:
+            await query.answer("Không rời được", show_alert=True)
+            print(f"Lỗi leave_chat (leave): {e}")
+            return
+        delete_group(chat_id)
+        await query.answer("Đã rời nhóm")
+        await query.edit_message_text("🚪 Đã rời nhóm và xóa khỏi DB", parse_mode=ParseMode.MARKDOWN)
+        return
+
+
 async def greet_new_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Chào mừng khi bot Thư Ký được add vào nhóm mới (MY_CHAT_MEMBER).
@@ -349,4 +489,4 @@ async def greet_new_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await context.bot.send_message(chat.id, random.choice(welcome_responses))
     except Exception as e:
-        print(f\"Lỗi greet_new_group: {e}\")
+        print(f"Lỗi greet_new_group: {e}")

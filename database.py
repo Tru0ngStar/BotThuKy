@@ -92,8 +92,23 @@ def init_db() -> None:
                 username TEXT,
                 last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS active_groups (
+                chat_id INTEGER PRIMARY KEY,
+                chat_title TEXT,
+                added_by_id INTEGER,
+                added_by_username TEXT,
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                status TEXT DEFAULT 'active',
+                approved_manually INTEGER DEFAULT 0
+            );
             """
         )
+        # Backward-compat: thêm cột nếu DB cũ thiếu
+        try:
+            cur.execute("ALTER TABLE active_groups ADD COLUMN approved_manually INTEGER DEFAULT 0")
+        except sqlite3.Error:
+            pass
         conn.commit()
     except sqlite3.Error as e:
         print(f"Lỗi init_db: {e}")
@@ -111,6 +126,107 @@ def get_db_connection():
     except sqlite3.Error as e:
         print(f"Lỗi kết nối DB: {e}")
         return None
+
+
+# =========================
+# ACTIVE GROUPS (owner management)
+# =========================
+def upsert_active_group(
+    chat_id: int,
+    chat_title: str | None,
+    added_by_id: int | None,
+    added_by_username: str | None,
+    status: str = "active",
+    approved_manually: int = 0,
+) -> None:
+    conn = get_db_connection()
+    if not conn:
+        return
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO active_groups
+                (chat_id, chat_title, added_by_id, added_by_username, added_at, status, approved_manually)
+            VALUES
+                (?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET
+                chat_title = excluded.chat_title,
+                added_by_id = excluded.added_by_id,
+                added_by_username = excluded.added_by_username,
+                added_at = excluded.added_at,
+                status = excluded.status,
+                approved_manually = excluded.approved_manually
+            """,
+            (
+                chat_id,
+                chat_title,
+                added_by_id,
+                added_by_username,
+                status,
+                approved_manually,
+            ),
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+    except sqlite3.Error as e:
+        print(f"Lỗi DB (upsert_active_group): {e}")
+
+
+def set_group_status(chat_id: int, status: str) -> None:
+    conn = get_db_connection()
+    if not conn:
+        return
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE active_groups SET status = ? WHERE chat_id = ?",
+            (status, chat_id),
+        )
+        conn.commit()
+        cursor.close()
+        conn.close()
+    except sqlite3.Error as e:
+        print(f"Lỗi DB (set_group_status): {e}")
+
+
+def delete_group(chat_id: int) -> None:
+    conn = get_db_connection()
+    if not conn:
+        return
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM active_groups WHERE chat_id = ?", (chat_id,))
+        conn.commit()
+        cursor.close()
+        conn.close()
+    except sqlite3.Error as e:
+        print(f"Lỗi DB (delete_group): {e}")
+
+
+def list_groups(status: str = "active") -> list[tuple]:
+    conn = get_db_connection()
+    if not conn:
+        return []
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT chat_id, chat_title, added_by_id, added_by_username, added_at, status, approved_manually
+            FROM active_groups
+            WHERE status = ?
+            ORDER BY added_at DESC
+            """,
+            (status,),
+        )
+        rows = cursor.fetchall() or []
+        cursor.close()
+        conn.close()
+        return rows
+    except sqlite3.Error as e:
+        print(f"Lỗi DB (list_groups): {e}")
+        return []
 
 
 # =========================
