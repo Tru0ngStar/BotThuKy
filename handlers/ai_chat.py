@@ -7,7 +7,6 @@ from lunarcalendar import Converter, Solar
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
-from config import OWNER_ID
 from utils import ai_client
 from utils.ai_client import AI_AVAILABLE, generate_ai_chat
 from database import (
@@ -160,79 +159,64 @@ def _build_prompt_with_reply(user_text: str, reply_msg, bot_id: int) -> str:
     )
 
 
-async def _is_admin_or_owner(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Chủ bot hoặc admin nhóm."""
-    user = update.effective_user
-    if user.id == OWNER_ID:
-        return True
-    chat = update.effective_chat
-    if chat.type == "private":
-        return user.id == OWNER_ID
-    member = await context.bot.get_chat_member(chat.id, user.id)
-    return member.status in ("creator", "administrator")
-
-
-async def _is_admin_or_owner_query(query, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    user = query.from_user
-    if user.id == OWNER_ID:
-        return True
-    chat = query.message.chat
-    if chat.type == "private":
-        return user.id == OWNER_ID
-    member = await context.bot.get_chat_member(chat.id, user.id)
-    return member.status in ("creator", "administrator")
-
-
 async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Lệnh /model — chọn model cho mọi nhóm."""
-    if not await _is_admin_or_owner(update, context):
-        await update.message.reply_text("⛔ Chỉ admin nhóm hoặc chủ bot mới dùng được /model")
-        return
-
-    current_label = ai_client.get_provider_label(ai_client.get_provider())
+    """Lệnh /model — mỗi user tự chọn model AI."""
+    user_id = update.effective_user.id
+    current_label = ai_client.get_provider_label(ai_client.get_provider(user_id))
 
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("⚡ Groq", callback_data="ai_model|groq"),
             InlineKeyboardButton("🧠 OpenRouter", callback_data="ai_model|openrouter"),
         ],
+        [
+            InlineKeyboardButton("✨ Gemini", callback_data="ai_model|gemini"),
+            InlineKeyboardButton("🔄 Tự động", callback_data="ai_model|auto"),
+        ],
     ])
     await update.message.reply_text(
-        f"🤖 **Chọn model AI** (áp dụng mọi nhóm)\n\nĐang dùng: **{current_label}**",
+        f"🤖 **Chọn model AI** (chỉ áp dụng cho cậu)\n\nĐang dùng: **{current_label}**",
         reply_markup=keyboard,
         parse_mode=ParseMode.MARKDOWN,
     )
 
 
 async def model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Xử lý nút chọn model — áp dụng mọi nhóm."""
+    """Xử lý nút chọn model — lưu theo từng user."""
     query = update.callback_query
     if not query.data or not query.data.startswith("ai_model|"):
         return
 
-    if query.from_user.id != OWNER_ID and not await _is_admin_or_owner_query(query, context):
-        await query.answer("⛔ Chỉ admin hoặc chủ bot!", show_alert=True)
-        return
-
+    user_id = query.from_user.id
     provider = query.data.split("|", 1)[1]
-    if provider not in ("groq", "openrouter"):
+    if provider not in ("groq", "openrouter", "gemini", "auto"):
         await query.answer("Lựa chọn không hợp lệ", show_alert=True)
         return
 
     has_groq = any(p.label.startswith("Groq") for p in ai_client.ai_providers)
     has_or = any(p.label.startswith("OpenRouter") for p in ai_client.ai_providers)
+    has_gemini = bool(ai_client.gemini_keys)
+
     if provider == "groq" and not has_groq:
         await query.answer("Chưa có key Groq trong secrets.txt", show_alert=True)
         return
     if provider == "openrouter" and not has_or:
         await query.answer("Chưa có key OpenRouter trong secrets.txt", show_alert=True)
         return
+    if provider == "gemini" and not has_gemini:
+        await query.answer("Chưa có key Gemini trong secrets.txt", show_alert=True)
+        return
 
-    ai_client.set_provider(provider)
-    label = ai_client.get_provider_label(provider)
+    if provider == "auto":
+        ai_client.set_provider(None, user_id)
+        label = ai_client.get_provider_label(None)
+    else:
+        ai_client.set_provider(provider, user_id)
+        label = ai_client.get_provider_label(provider)
+
     await query.answer(f"Đã đổi → {label}")
     await query.edit_message_text(
-        f"✅ Model **mọi nhóm**: **{label}**",
+        f"✅ Model của cậu: **{label}**",
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -256,7 +240,7 @@ async def get_ai_response(
         system_prompt = get_dynamic_system_prompt(user_name, group_name)
         messages = _build_messages_list(system_prompt, history, prompt)
 
-        reply_text = await generate_ai_chat(messages, chat_id=chat_id)
+        reply_text = await generate_ai_chat(messages, chat_id=chat_id, user_id=user_id)
         if not reply_text:
             return "❌ AI không trả lời được (có thể bị chặn nội dung)."
 

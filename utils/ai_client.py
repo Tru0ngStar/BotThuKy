@@ -39,7 +39,7 @@ gemini_key_index = 0
 _gemini_lock = asyncio.Lock()
 _last_provider_idx = 0
 AI_AVAILABLE = False
-_global_provider_pref: str | None = None
+_user_provider_prefs: dict[int, str] = {}
 
 
 @dataclass
@@ -132,19 +132,24 @@ def _provider_kind(prov: _AIProvider) -> str:
     return "groq" if prov.label.startswith("Groq") else "openrouter"
 
 
-def set_provider(provider: str) -> None:
-    global _global_provider_pref
-    if provider not in ("groq", "openrouter"):
-        raise ValueError("provider phải là groq hoặc openrouter")
-    _global_provider_pref = provider
+def set_provider(provider: str | None, user_id: int) -> None:
+    """Đặt model ưu tiên cho từng user (None = tự động)."""
+    if provider is not None and provider not in ("groq", "openrouter", "gemini"):
+        raise ValueError("provider phải là groq, openrouter, gemini hoặc None")
+    if provider is None:
+        _user_provider_prefs.pop(user_id, None)
+    else:
+        _user_provider_prefs[user_id] = provider
 
 
-def get_provider() -> str | None:
-    return _global_provider_pref
+def get_provider(user_id: int | None = None) -> str | None:
+    if user_id is None:
+        return None
+    return _user_provider_prefs.get(user_id)
 
 
-def get_effective_provider(chat_id: int | None = None) -> str | None:
-    return _global_provider_pref
+def get_effective_provider(user_id: int | None = None) -> str | None:
+    return get_provider(user_id)
 
 
 def get_provider_label(provider: str | None) -> str:
@@ -152,11 +157,13 @@ def get_provider_label(provider: str | None) -> str:
         return f"Groq ({GROQ_MODEL})"
     if provider == "openrouter":
         return f"OpenRouter ({OPENROUTER_MODEL})"
+    if provider == "gemini":
+        return f"Gemini ({GEMINI_MODEL})"
     return "Tự động (Groq → OpenRouter → Gemini)"
 
 
-def _ordered_providers(chat_id: int | None) -> list:
-    pref = get_effective_provider(chat_id)
+def _ordered_providers(user_id: int | None) -> list:
+    pref = get_effective_provider(user_id)
     groq = [p for p in ai_providers if _provider_kind(p) == "groq"]
     orp = [p for p in ai_providers if _provider_kind(p) == "openrouter"]
     if pref == "groq":
@@ -227,19 +234,10 @@ async def get_gemini_response(messages: list[dict]) -> str:
     return await loop.run_in_executor(None, _call_gemini_sync, key, messages)
 
 
-async def generate_ai_chat(messages: list[dict], chat_id: int | None = None) -> str:
-    """Gọi chat: Groq → OpenRouter → Gemini (Gemini xoay key riêng)."""
+async def _try_openai_providers(messages: list[dict], user_id: int | None) -> str:
     global _last_provider_idx
-
-    if not messages:
-        raise RuntimeError("Danh sách messages rỗng")
-
-    if not AI_AVAILABLE:
-        raise RuntimeError("Chưa cấu hình AI (groq:/openrouter:/gemini: trong secrets.txt)")
-
-    ordered = _ordered_providers(chat_id)
+    ordered = _ordered_providers(user_id)
     last_error: Exception | None = None
-
     for prov in ordered:
         try:
             response = prov.client.chat.completions.create(
@@ -256,12 +254,60 @@ async def generate_ai_chat(messages: list[dict], chat_id: int | None = None) -> 
         except Exception as e:
             last_error = e
             print(f"[WARN] {prov.label} lỗi: {e}")
+    raise last_error or RuntimeError("Không gọi được Groq/OpenRouter")
 
-    if gemini_keys:
+
+async def generate_ai_chat(
+    messages: list[dict],
+    chat_id: int | None = None,
+    user_id: int | None = None,
+) -> str:
+    """Gọi chat theo model user chọn (mặc định: Groq → OpenRouter → Gemini)."""
+    if not messages:
+        raise RuntimeError("Danh sách messages rỗng")
+
+    if not AI_AVAILABLE:
+        raise RuntimeError("Chưa cấu hình AI (groq:/openrouter:/gemini: trong secrets.txt)")
+
+    pref = get_effective_provider(user_id)
+    last_error: Exception | None = None
+
+    if pref == "gemini":
+        if gemini_keys:
+            try:
+                return await get_gemini_response(messages)
+            except Exception as e:
+                last_error = e
+                print(f"[WARN] Gemini lỗi: {e}")
         try:
-            return await get_gemini_response(messages)
+            return await _try_openai_providers(messages, user_id)
         except Exception as e:
             last_error = e
-            print(f"[WARN] Gemini lỗi: {e}")
+
+    elif pref in ("groq", "openrouter"):
+        try:
+            return await _try_openai_providers(messages, user_id)
+        except Exception as e:
+            last_error = e
+            print(f"[WARN] OpenAI providers lỗi: {e}")
+        if gemini_keys:
+            try:
+                return await get_gemini_response(messages)
+            except Exception as e:
+                last_error = e
+                print(f"[WARN] Gemini fallback lỗi: {e}")
+
+    else:
+        try:
+            return await _try_openai_providers(messages, user_id)
+        except Exception as e:
+            last_error = e
+            print(f"[WARN] OpenAI providers lỗi: {e}")
+        if gemini_keys:
+            try:
+                return await get_gemini_response(messages)
+            except Exception as e:
+                last_error = e
+                print(f"[WARN] Gemini lỗi: {e}")
 
     raise last_error or RuntimeError("Không gọi được AI")
