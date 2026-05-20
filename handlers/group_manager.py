@@ -44,7 +44,8 @@ async def list_groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
         title_disp = title or "(không có tên)"
         tag = "👤 Thủ công" if int(approved_manually or 0) == 1 else "🤖 Auto"
         lines.append(f"{idx}. {tag} — {title_disp}\n   ID: `{chat_id}`")
-        keyboard.append([InlineKeyboardButton("🚪 Rời nhóm", callback_data=f"group_leave|{chat_id}")])
+        short_title = (title_disp[:20] + "…") if len(title_disp) > 20 else title_disp
+        keyboard.append([InlineKeyboardButton(f"🚪 Rời: {short_title}", callback_data=f"group_leave|{chat_id}")])
 
     await update.message.reply_text(
         "\n".join(lines),
