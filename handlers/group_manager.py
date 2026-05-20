@@ -72,10 +72,24 @@ async def leave_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         await context.bot.leave_chat(chat_id)
-        delete_group(chat_id)
-        await update.message.reply_text(f"✅ Đã rời nhóm `{chat_id}` và xóa khỏi DB.", parse_mode="Markdown")
     except Exception as e:
+        err = str(e).lower()
+        # Nhóm đã bị deactivate hoặc bot không còn trong nhóm → xóa DB thẳng
+        if "deactivated" in err or "not found" in err or "kicked" in err or "chat_id_invalid" in err:
+            delete_group(chat_id)
+            await update.message.reply_text(
+                f"⚠️ Nhóm `{chat_id}` đã deactivated (không còn thành viên nào).\n"
+                f"✅ Đã xóa khỏi DB.",
+                parse_mode="Markdown",
+            )
+            return
         await update.message.reply_text(f"❌ Không rời được nhóm: {str(e)[:200]}")
+        return
+
+    delete_group(chat_id)
+    await update.message.reply_text(
+        f"✅ Đã rời nhóm `{chat_id}` và xóa khỏi DB.", parse_mode="Markdown"
+    )
 
 
 async def add_group_manually(update: Update, context: ContextTypes.DEFAULT_TYPE):

@@ -451,6 +451,16 @@ async def group_action_callback(update: Update, context: ContextTypes.DEFAULT_TY
         try:
             await context.bot.leave_chat(chat_id)
         except Exception as e:
+            err = str(e).lower()
+            # Nhóm deactivated hoặc bot đã bị kick → xóa DB luôn
+            if "deactivated" in err or "not found" in err or "kicked" in err or "chat_id_invalid" in err:
+                delete_group(chat_id)
+                await query.answer("Nhóm đã deactivated, đã xóa khỏi DB")
+                await query.edit_message_text(
+                    "⚠️ Nhóm đã deactivated (không còn thành viên).\n✅ Đã xóa khỏi DB.",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                return
             await query.answer("Không rời được", show_alert=True)
             print(f"Lỗi leave_chat (leave): {e}")
             return
