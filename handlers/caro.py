@@ -31,7 +31,7 @@ def ensure_session(session_id, player_x, player_o=None):
     return session
 
 
-def build_caro_button_rows(board_id, board, size):
+def build_caro_button_rows(board_id, board, size, last_row=None, last_col=None):
     rows = []
     show_numbers = size <= 7
     if show_numbers:
@@ -46,13 +46,20 @@ def build_caro_button_rows(board_id, board, size):
         for c in range(size):
             cell = board[r][c]
             label = "❌" if cell == 'X' else ("⭕" if cell == 'O' else "ㅤ")
-            row.append(InlineKeyboardButton(label, callback_data=f"caro_game|{board_id}|{r}|{c}"))
+            is_last = (last_row is not None and last_col is not None
+                       and r == last_row and c == last_col)
+            btn = InlineKeyboardButton(
+                label,
+                callback_data=f"caro_game|{board_id}|{r}|{c}",
+                style="primary" if is_last else None,
+            )
+            row.append(btn)
         rows.append(row)
     return rows
 
 
-def make_caro_keyboard_dynamic(board_id, board, size, extra_rows=None):
-    rows = build_caro_button_rows(board_id, board, size)
+def make_caro_keyboard_dynamic(board_id, board, size, extra_rows=None, last_row=None, last_col=None):
+    rows = build_caro_button_rows(board_id, board, size, last_row=last_row, last_col=last_col)
     if extra_rows:
         rows.extend(extra_rows)
     return InlineKeyboardMarkup(rows)
@@ -414,7 +421,12 @@ async def caro_game_callback(update, context):
                 [InlineKeyboardButton("Chơi lại", callback_data=f"caro3_action|retry|{sid}|{game['player_x']}|{game['player_o']}")],
                 [InlineKeyboardButton("Kết thúc", callback_data=f"caro3_action|end|{sid}")]
             ]
-        kb = make_caro_keyboard_dynamic(board_id, game['board'], size, extra_rows=extra_rows)
+        kb = make_caro_keyboard_dynamic(
+            board_id, game['board'], size,
+            extra_rows=extra_rows,
+            last_row=game['last_row'],
+            last_col=game['last_col'],
+        )
         display_text = build_caro_display_text(
             game, player_x_name, player_o_name, game['chat_id'], result_note, game_over=True
         )
@@ -425,7 +437,11 @@ async def caro_game_callback(update, context):
     game['last_row'] = r
     game['last_col'] = c
     game['current'] = 'O' if game['current'] == 'X' else 'X'
-    kb = make_caro_keyboard_dynamic(board_id, game['board'], size)
+    kb = make_caro_keyboard_dynamic(
+        board_id, game['board'], size,
+        last_row=game['last_row'],
+        last_col=game['last_col'],
+    )
     display_text = build_caro_display_text(game, player_x_name, player_o_name, game['chat_id'])
     await query.edit_message_text(display_text, reply_markup=kb)
 
