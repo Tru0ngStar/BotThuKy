@@ -17,7 +17,7 @@ except ImportError:
     _PILImage = None
 
 # Groq Vision model
-GROQ_VISION_MODEL = "llama-3.2-11b-vision-preview"
+GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 try:
     from openai import OpenAI
@@ -347,7 +347,7 @@ async def _try_openai_providers(messages: list[dict], user_id: int | None) -> st
     raise last_error or RuntimeError("Không gọi được Groq/OpenRouter")
 
 
-def _resize_image_for_groq(image_bytes: bytes, max_side: int = 900) -> tuple[bytes, str]:
+def _resize_image_for_groq(image_bytes: bytes, max_side: int = 800) -> tuple[bytes, str]:
     """Co ảnh về max_side px (cạnh dài nhất) để tiết kiệm TPM của Groq Free."""
     if not PIL_AVAILABLE:
         return image_bytes, "image/jpeg"
