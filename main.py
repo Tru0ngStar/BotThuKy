@@ -50,6 +50,7 @@ def main():
     app.add_handler(CommandHandler("xo",        caro.xo_challenge))
     app.add_handler(CommandHandler("rank",      caro.rank_caro))
     app.add_handler(CommandHandler("set",       caro.set_caro_points))
+    app.add_handler(CommandHandler("reset",   caro.reset_caro_leaderboard))
 
     # Media
     app.add_handler(CommandHandler("download",  media.download_video))

@@ -10,6 +10,7 @@ from database import (
     games, session_scores, caro_scores,
     get_caro_score, record_caro_result, get_db_connection,
     get_global_caro_ranking, get_user_display_name,
+    clear_caro_scores_for_chat,
 )
 from utils.helpers import get_member_name, resolve_user_identifier, is_board_full
 import sqlite3
@@ -57,7 +58,15 @@ def make_caro_keyboard_dynamic(board_id, board, size, extra_rows=None):
     return InlineKeyboardMarkup(rows)
 
 
-def build_caro_display_text(game, player_x_name, player_o_name, chat_id, extra_note=None):
+def build_caro_display_text(
+    game,
+    player_x_name,
+    player_o_name,
+    chat_id,
+    extra_note=None,
+    *,
+    game_over: bool = False,
+):
     size = game['size']
     win_count = game['win_count']
     lines = []
@@ -78,11 +87,12 @@ def build_caro_display_text(game, player_x_name, player_o_name, chat_id, extra_n
         lines.append(f"🎮 Caro {size}x{size} - {win_count} ô để thắng")
     opponent_display = player_o_name if player_o_name else "player 2"
     lines.append(f"{player_x_name} (X) vs {opponent_display} (O)")
-    if game.get('last_turn') is not None:
-        last_player = player_x_name if game['last_turn'] == 'X' else opponent_display
-        lines.append(f"Last turn: {last_player} : hàng {game['last_row'] + 1}, cột {game['last_col'] + 1}")
-    current_player = player_x_name if game['current'] == 'X' else opponent_display
-    lines.append(f"Đến lượt của :{current_player}")
+    if not game_over:
+        if game.get('last_turn') is not None:
+            last_player = player_x_name if game['last_turn'] == 'X' else opponent_display
+            lines.append(f"Last turn: {last_player} : hàng {game['last_row'] + 1}, cột {game['last_col'] + 1}")
+        current_player = player_x_name if game['current'] == 'X' else opponent_display
+        lines.append(f"Đến lượt của :{current_player}")
     if extra_note:
         lines.append("")
         lines.append(extra_note)
@@ -155,7 +165,7 @@ async def caro_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def xo_challenge(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.reply_to_message:
-        await update.message.reply_text('❌ Reply to challenge')
+        await update.message.reply_text('❌ Reply người khác để chơi Caro!')
         return
     challenger = update.effective_user
     target = update.message.reply_to_message.from_user
@@ -195,7 +205,7 @@ async def _resolve_rank_display_name(
 
 
 async def rank_caro(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Bảng xếp hạng Caro tổng (mọi nhóm), dùng được cả chat riêng."""
+    """Bảng xếp hạng Caro, dùng được cả chat riêng."""
     chat = update.effective_chat
     chat_id = chat.id if chat and chat.type != "private" else None
     rows = get_global_caro_ranking()
@@ -213,7 +223,7 @@ async def rank_caro(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ranking.append((rank, uid, wins, total))
 
     top = ranking[:10]
-    lines = ["🏆 Xếp hạng Caro tổng (mọi nhóm):"]
+    lines = ["🏆 Xếp hạng Caro:"]
     for rank_val, uid, wins, total in top:
         name = await _resolve_rank_display_name(context, chat_id, uid, f"User {uid}")
         lines.append(f"{rank_val}. {name} — {wins} điểm ({total} trận)")
@@ -293,6 +303,25 @@ async def set_caro_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_scores_map[target_id] = {"wins": points, "total": new_total}
     target_name = target_user.full_name if target_user else await get_member_name(context, chat_id, target_id, f"User {target_id}")
     await update.message.reply_text(f"✅ Đã set {points} điểm Caro cho {target_name}.")
+
+
+async def reset_caro_leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lệnh /reset — xóa toàn bộ điểm Caro của nhóm (chỉ admin hoặc chủ bot)."""
+    chat = update.effective_chat
+    if not chat or chat.type == "private":
+        await update.message.reply_text("⚠️ Lệnh /reset chỉ dùng trong nhóm.")
+        return
+    chat_id = chat.id
+    user = update.effective_user
+    member = await context.bot.get_chat_member(chat_id, user.id)
+    if user.id != OWNER_ID and member.status not in ("administrator", "creator"):
+        await update.message.reply_text("⛔ Chỉ admin hoặc chủ bot mới được reset bảng điểm.")
+        return
+    deleted = clear_caro_scores_for_chat(chat_id)
+    await update.message.reply_text(
+        f"🧹 Đã reset bảng điểm Caro của nhóm này ({deleted} bản ghi trong DB).\n"
+        "Điểm trên /rank (tổng) cũng bớt phần đóng góp từ nhóm này."
+    )
 
 
 async def caro_size_callback(update, context):
@@ -386,7 +415,9 @@ async def caro_game_callback(update, context):
                 [InlineKeyboardButton("Kết thúc", callback_data=f"caro3_action|end|{sid}")]
             ]
         kb = make_caro_keyboard_dynamic(board_id, game['board'], size, extra_rows=extra_rows)
-        display_text = build_caro_display_text(game, player_x_name, player_o_name, game['chat_id'], result_note)
+        display_text = build_caro_display_text(
+            game, player_x_name, player_o_name, game['chat_id'], result_note, game_over=True
+        )
         await query.edit_message_text(display_text, reply_markup=kb)
         del games[board_id]
         return

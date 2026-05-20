@@ -204,6 +204,25 @@ def record_caro_result(chat_id: int, winner_id=None, loser_id=None, draw_players
             update_caro_score(loser_id, 0, 1, chat_id)
 
 
+def clear_caro_scores_for_chat(chat_id: int) -> int:
+    """Xóa toàn bộ điểm Caro của nhóm (SQLite + bộ nhớ tạm). Trả về số dòng đã xóa trong DB."""
+    caro_scores.pop(chat_id, None)
+    conn = get_db_connection()
+    if not conn:
+        return 0
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM user_caro_scores WHERE chat_id = ?", (chat_id,))
+        deleted = cursor.rowcount if cursor.rowcount is not None and cursor.rowcount >= 0 else 0
+        conn.commit()
+        cursor.close()
+        conn.close()
+        return deleted
+    except sqlite3.Error as e:
+        print(f"Lỗi DB (clear_caro_scores_for_chat): {e}")
+        return 0
+
+
 def get_global_caro_ranking() -> list[tuple[int, int, int]]:
     """Tổng điểm Caro mọi nhóm: [(user_id, wins, total_games), ...] xếp hạng giảm dần."""
     aggregated: dict[int, dict[str, int]] = {}
