@@ -372,7 +372,8 @@ async def handle_my_chat_member(update: Update, context: ContextTypes.DEFAULT_TY
     - Khi được add: lưu DB (pending) + báo owner kèm nút accept/reject.
     - Khi bị kick/left: set inactive.
     """
-    chat_member = getattr(update, "chat_member", None)
+    # SỬA: MY_CHAT_MEMBER dùng update.my_chat_member, không phải update.chat_member
+    chat_member = getattr(update, "my_chat_member", None)
     if not chat_member:
         return
 
@@ -463,7 +464,7 @@ async def greet_new_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Chào mừng khi bot Thư Ký được add vào nhóm mới (MY_CHAT_MEMBER).
     """
-    chat_member = getattr(update, "chat_member", None)
+    chat_member = getattr(update, "my_chat_member", None)
     if not chat_member:
         return
 

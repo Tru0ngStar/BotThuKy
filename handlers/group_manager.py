@@ -9,7 +9,7 @@ from telegram.ext import ContextTypes
 from config import OWNER_ID
 from database import (
     delete_group,
-    list_groups,
+    list_groups as list_groups_db,
     set_group_status,
     upsert_active_group,
 )
@@ -33,7 +33,7 @@ async def list_groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ /gr chỉ dùng trong chat riêng với owner.")
         return
 
-    rows = list_groups(status="active")
+    rows = list_groups_db(status="active")
     if not rows:
         await update.message.reply_text("😿 Hiện bot chưa có nhóm nào đang active trong DB.")
         return
