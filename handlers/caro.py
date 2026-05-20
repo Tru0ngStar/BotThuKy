@@ -13,7 +13,6 @@ from database import (
 )
 from utils.helpers import get_member_name, resolve_user_identifier, is_board_full
 import sqlite3
-from handlers.admin import rules
 
 
 def generate_board_id(chat_id: int) -> str:
@@ -452,6 +451,3 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await caro3_action_callback(update, context)
     elif data.startswith('caro_game|') or data.startswith('caro8|'):
         await caro_game_callback(update, context)
-    elif data == "show_rules":
-        await update.callback_query.answer()
-        await rules(update, context)

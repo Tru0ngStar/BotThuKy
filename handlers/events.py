@@ -17,7 +17,6 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
     for new_member in update.message.new_chat_members:
         welcome_text = f"👋 **Chào mừng {new_member.full_name} đến với nhóm!**\n\n📰 /news - Tin mới từ VnExpress\n🌤️ /tt - Tra thời tiết\n🎲 /daoly - Đạo lý hôm nay\n♟️ /caro - Đánh Caro\n❓ /quiz - Trò chơi quiz"
         keyboard = [
-            [InlineKeyboardButton("📜 Xem Nội Quy", callback_data="show_rules")],
             [InlineKeyboardButton("💬 Liên hệ Admin", url="https://t.me/sylviee6")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
