@@ -2,7 +2,15 @@
 main.py — Entry point: đăng ký handler, chạy bot
 """
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackQueryHandler
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    ChatMemberHandler,
+    CommandHandler,
+    MessageHandler,
+    filters,
+)
+
 from config import BOT_TOKEN
 from database import init_db
 from handlers import admin, ai_chat, caro, media, misc, events
@@ -57,22 +65,36 @@ def main():
     app.add_handler(CommandHandler("mp3",       media.download_mp3))
 
     # === Message events ===
-    app.add_handler(MessageHandler(
-        filters.StatusUpdate.NEW_CHAT_MEMBERS,
-        events.welcome_new_member
-    ))
-    app.add_handler(MessageHandler(
-        filters.PHOTO & ~filters.COMMAND,
-        ai_chat.image_handler,
-    ))
-    app.add_handler(MessageHandler(
-        filters.Document.IMAGE & ~filters.COMMAND,
-        ai_chat.image_handler,
-    ))
-    app.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND,
-        events.answer_handler
-    ))
+    app.add_handler(
+        MessageHandler(
+            filters.StatusUpdate.NEW_CHAT_MEMBERS,
+            events.welcome_new_member,
+        )
+    )
+    app.add_handler(
+        ChatMemberHandler(
+            events.greet_new_group,
+            ChatMemberHandler.MY_CHAT_MEMBER,
+        )
+    )
+    app.add_handler(
+        MessageHandler(
+            filters.PHOTO & ~filters.COMMAND,
+            ai_chat.image_handler,
+        )
+    )
+    app.add_handler(
+        MessageHandler(
+            filters.Document.IMAGE & ~filters.COMMAND,
+            ai_chat.image_handler,
+        )
+    )
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            events.answer_handler,
+        )
+    )
 
     # === Callback router ===
     app.add_handler(CallbackQueryHandler(caro.callback_router))

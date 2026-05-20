@@ -5,9 +5,11 @@ import random
 import re
 import sqlite3
 from datetime import datetime
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
+
 from database import get_db_connection, user_afk, user_info, quiz_messages
 from utils.helpers import format_duration
 from handlers.ai_chat import ai_chat_handler
@@ -257,3 +259,94 @@ async def answer_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 5. Fallback: AFK check
     await check_afk(update, context)
+
+
+async def greet_new_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Chào mừng khi bot Thư Ký được add vào nhóm mới (MY_CHAT_MEMBER).
+    """
+    chat_member = getattr(update, "chat_member", None)
+    if not chat_member:
+        return
+
+    new = chat_member.new_chat_member
+    old = chat_member.old_chat_member
+
+    # Chỉ xử lý khi chính bot được thêm vào / bật lại
+    if not new or new.user.id != context.bot.id:
+        return
+
+    new_status = new.status
+    old_status = old.status if old else None
+
+    became_member = new_status in ("member", "administrator")
+    was_member = old_status in ("member", "administrator")
+    if not became_member or was_member:
+        return
+
+    chat = chat_member.chat
+    if chat.type not in ("group", "supergroup"):
+        return
+
+    welcome_responses = [
+        # --- KIỂU PHÁN XÉT NĂNG LỰC / BÀI XÍCH ---
+        "Chào mừng cậu đến với ổ vô tri này, hy vọng cậu không làm tăng độ tạ của nhóm. ☠️",
+        "Lại có thành viên mới vào báo nữa rồi à? Nhóm này chưa đủ loạn hay sao. 😮‍婊",
+        "Né tớ ra nhé thành viên mới, tớ gánh mấy đứa cũ ở đây đã đủ còng lưng rồi. 🏋️",
+        "Tớ nghe nói nhóm sắp đón thêm một quả tạ, hóa ra là cậu à? 🏋️‍♂️",
+        "Chào mừng cậu, mong là cậu có ích hơn mấy đứa ăn hại đang ngồi sẵn trong này. 👥",
+        "Lại thêm một chiếc chiếu mới xộc mùi vô tri bước vào đây. 🧊",
+        "Nhóm đang thiếu người làm việc, chứ người đứng xem với báo như cậu thì thừa rồi. 🙄",
+        "Nhìn Avatar là thấy một bầu trời báo thủ rồi, vào nhóm bớt bớt cái nết lại nghe chưa. 📸",
+        "Chào cậu mới, hy vọng chỉ số IQ của cậu không thấp hơn nhiệt độ phòng điều hòa. ❄️",
+        "Để tớ chống mắt lên xem cậu trụ lại cái nhóm này được bao nhiêu ngày. 👁️",
+        # --- KIỂU CẢNH BÁO / ĐE DỌA CỌC CẰN ---
+        "Chào cậu nhé! Vào nhóm thì nhớ tắt thông báo đi không lại trầm cảm đấy. 📉",
+        "Vào nhóm rồi thì nhớ đọc ghim, đừng có mở mồm ra hỏi mấy câu ngớ ngẩn nhé. 📋",
+        "Chào cậu mới vào nhé! Nhớ mang theo não trước khi phát biểu trong này nha. 🧠",
+        "Chào cậu, vào đây thì tém tém cái nết lại kẻo tớ block không kịp báo trước đâu. 🚫",
+        "Ủa ai mời cậu vào đây thế? Thôi lỡ vào rồi thì ngồi im đừng có làm phiền tớ. 🤫",
+        "Vào thì vào nhanh lên rồi đóng cái cửa lại, gió máy quá cậu ơi. 🚪",
+        "Đã vào đây thì phải ngoan, tớ gõ đầu mấy đứa cũ ở đây quen tay rồi đấy nhé. 🔨",
+        "Tớ không có nghĩa vụ phải đi dọn rác do thành viên mới bày ra đâu, nhớ đấy! 🚮",
+        "Biết luật nhóm chưa cậu mới? Chưa biết thì tự đi mà tìm hiểu, đừng có réo tớ. 😤",
+        "Nói trước là tớ rất cọc, đừng có tag tớ vào mấy cái thắc mắc sơ đẳng của cậu. ⚠️",
+        # --- KIỂU MỈA MAI SỰ RẢNH RỖI / VÔ TRI ---
+        "Chào mừng cậu! Chúc cậu sống sót qua 24 giờ đầu tiên ở cái động này. 💀",
+        "Thêm một người rảnh rỗi nữa gia nhập nhóm. Thôi thì cứ tự nhiên đi cậu. ☕",
+        "Chào mừng cậu đến với nơi hội tụ của những chuyên gia nói đạo lý nhưng sống lỗi. 🤡",
+        "Hy vọng cậu vào nhóm để làm việc chứ không phải để spam mấy thứ rác rưởi. 🗑️",
+        "Lại một linh hồn tội nghiệp nữa sa chân vào cái hố không có lối thoát này. 🕳️",
+        "Hết việc ngoài đời rồi hay sao mà lại chui vào cái nhóm này để xàm xí vậy cậu? 📱",
+        "Chào mừng đến với rạp xiếc, cậu vừa được phong danh hiệu hề mới của nhóm. 🎪",
+        "Nhóm này vốn đã bất ổn rồi, cậu vào nữa là thành thảm họa luôn đấy. 🌪️",
+        "Nhìn cậu có vẻ rảnh, tí nữa lội hết đống tin nhắn cũ của nhóm rồi tóm tắt lại cho tớ đi. 📝",
+        "Chào cậu, hi vọng cậu không phải kiểu người suốt ngày gửi link rác với sticker vô nghĩa. 🚯",
+        # --- KIỂU CHÊ BAI / THÁI ĐỘ \"LỒI LÕM\" ---
+        "Ủa ai đây? Ai cho người lạ vào phòng làm việc của tớ thế này? 🏢",
+        "Nói thật là tớ cũng chẳng hào hứng gì khi có thêm thành viên mới đâu, nhưng thôi cứ chào cái. 😒",
+        "Chào cậu, vào nhóm nhớ giữ trật tự cho tớ ngủ, cấm nháo nhào lên. 🛌",
+        "Lại một người nữa vào để làm loãng cái sự tập trung vốn đã ít ỏi của nhóm này. 📉",
+        "Cậu mới vào đúng không? Tự giác giới thiệu bản thân ngắn gọn rồi im lặng đi nhé. 🎤",
+        "Vào đây thì bớt thể hiện lại, trong này toàn cao thủ báo đời thôi cậu không lại được đâu. 🥇",
+        "Chào mừng cậu đến với thế giới của những chiếc deadline mọc rêu, hi vọng cậu không nợ theo. 🍄",
+        "Mới nhìn qua đã thấy không cùng tần số rồi, nhưng lỡ vào rồi thì chịu thôi. 📻",
+        "Chào cậu, chúc cậu không bị bay màu khỏi nhóm sau vài câu phát biểu đầu tiên. 🧨",
+        "Thêm một người, thêm một nỗi lo. Tớ lại phải quản lý thêm một đứa rồi. 😮‍💨",
+        # --- KIỂU TIỄN KHÁCH SỚM / KHÔNG HOAN NGHÊNH ---
+        "Nếu định vào đây để thả thính hay spam bán hàng thì mời cậu tự out luôn cho nhanh. 🚪",
+        "Tớ cá là cậu sẽ out nhóm trong vòng 3 nốt nhạc vì không chịu nổi nhiệt đâu. 🎵",
+        "Chào cậu, nếu thấy nhóm ồn quá thì nút 'Leave Group' ở ngay góc màn hình nhé. ↖️",
+        "Cậu vào nhóm có mục đích gì không? Không có thì ra ngoài cho rộng chỗ. 🙅",
+        "Tớ chuẩn bị sẵn nút kích rồi, cậu mà hó hé câu nào ngáo ngơ là bay màu ngay. 💣",
+        "Vào nhóm chỉ để tàu ngầm xem trộm tin nhắn đúng không? Tớ ghét nhất kiểu đấy. 🕵️",
+        "Chào mừng cậu, mong cậu không làm tớ phải tốn công bấm nút xóa tài khoản khỏi nhóm. 🛑",
+        "Nhóm này không hoan nghênh mấy đứa lười biếng đâu, cậu tự biết mình thuộc loại nào rồi chứ? 🦥",
+        "Cậu mới vào à? Nhớ nộp lệ phí cho tớ... đùa đấy nhưng ngoan ngoãn thì sống lâu nhé. 💰",
+        "Chào hay không chào cũng thế, đằng nào tuần sau cậu chẳng chán rồi tự out. ⏳",
+    ]
+
+    try:
+        await context.bot.send_message(chat.id, random.choice(welcome_responses))
+    except Exception as e:
+        print(f\"Lỗi greet_new_group: {e}\")
