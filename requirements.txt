@@ -5,3 +5,4 @@ lunarcalendar
 feedparser
 requests
 yt-dlp
+Pillow

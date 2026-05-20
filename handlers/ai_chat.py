@@ -321,47 +321,65 @@ async def get_ai_image_response(
     user_name: str = "",
     group_name: str = "",
 ) -> str:
-    """Phân tích ảnh bằng Gemini vision, cập nhật lịch sử phiên (chỉ text)."""
-    if not ai_client.gemini_keys:
+    """Phân tích ảnh: thử Groq Vision trước, fallback sang Gemini."""
+    has_groq = any(p.label.startswith("Groq") for p in ai_client.ai_providers)
+    has_gemini = bool(ai_client.gemini_keys) and ai_client.GEMINI_SDK_AVAILABLE
+
+    if not has_groq and not has_gemini:
         return (
-            "❌ Phân tích ảnh chỉ dùng Gemini. Thêm gemini:AIza... vào secrets.txt "
-            "và cài: pip install google-genai"
+            "❌ Cần ít nhất một trong hai:\n"
+            "• Groq key (groq:gsk_...) trong secrets.txt\n"
+            "• Gemini key (gemini:AIza...) + pip install google-genai"
         )
-    if not ai_client.GEMINI_SDK_AVAILABLE:
-        return "❌ Chưa cài google-genai. Chạy: pip install google-genai"
 
+    system_prompt = get_dynamic_system_prompt(user_name, group_name).strip()
+    instruct = prompt.strip() or (
+        "Cậu xem giúp tớ ảnh này có gì, mô tả ngắn gọn và hữu ích bằng tiếng Việt nhé."
+    )
+
+    reply_text: str | None = None
+
+    # Ưu tiên 1: Groq Vision (nhanh hơn)
+    if has_groq:
+        try:
+            reply_text = await ai_client.groq_analyze_image(
+                system_prompt,
+                instruct,
+                image_bytes,
+                mime_type,
+            )
+        except Exception as e:
+            print(f"[WARN] Groq Vision lỗi, thử Gemini: {e}")
+
+    # Ưu tiên 2: Gemini (fallback)
+    if not reply_text and has_gemini:
+        try:
+            vision_prompt = system_prompt + _VISION_CONTEXT_ADDON
+            reply_text = await ai_client.gemini_analyze_image(
+                vision_prompt,
+                instruct,
+                image_bytes,
+                mime_type,
+            )
+        except Exception as e:
+            print(f"[WARN] Gemini Vision lỗi: {e}")
+
+    if not reply_text:
+        return "❌ Cả Groq Vision và Gemini đều không phân tích được ảnh này."
+
+    # Lưu lịch sử phiên (chỉ text)
     try:
-        system_prompt = (
-            get_dynamic_system_prompt(user_name, group_name).strip() + _VISION_CONTEXT_ADDON
-        )
-        instruct = prompt.strip() or (
-            "Cậu xem giúp tớ ảnh này có gì, mô tả ngắn gọn và hữu ích bằng tiếng Việt nhé."
-        )
-
-        reply_text = await gemini_analyze_image(
-            system_prompt,
-            instruct,
-            image_bytes,
-            mime_type,
-        )
-        if not reply_text:
-            return "❌ Không nhận được nội dung từ Gemini."
-
-        history_prompt = f"[Ảnh] {instruct}" if len(instruct) < 3200 else instruct[:3200] + "..."
+        history_prompt = f"[Ảnh] {instruct}"[:3200]
         history = _trim_context(get_ai_session_history(user_id))
         new_history = history + [
             {"role": "user", "content": history_prompt},
             {"role": "assistant", "content": reply_text},
         ]
         save_ai_session_history(user_id, _trim_context(new_history))
-
-        return reply_text
     except Exception as e:
-        err = str(e)
-        print(f"Error Gemini vision: {e}")
-        if len(err) > 200:
-            err = err[:200] + "..."
-        return f"❌ Lỗi phân tích ảnh: {err}\n\n💡 Kiểm tra key Gemini và quota."
+        print(f"[WARN] Lưu session thất bại: {e}")
+
+    return reply_text
 
 
 async def ai_chat_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:

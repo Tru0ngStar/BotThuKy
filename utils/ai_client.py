@@ -6,6 +6,19 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
+import base64
+import io
+
+try:
+    from PIL import Image as _PILImage
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+    _PILImage = None
+
+# Groq Vision model
+GROQ_VISION_MODEL = "llama-3.2-11b-vision-preview"
+
 try:
     from openai import OpenAI
     OPENAI_SDK_AVAILABLE = True
@@ -332,6 +345,98 @@ async def _try_openai_providers(messages: list[dict], user_id: int | None) -> st
             last_error = e
             print(f"[WARN] {prov.label} lỗi: {e}")
     raise last_error or RuntimeError("Không gọi được Groq/OpenRouter")
+
+
+def _resize_image_for_groq(image_bytes: bytes, max_side: int = 900) -> tuple[bytes, str]:
+    """Co ảnh về max_side px (cạnh dài nhất) để tiết kiệm TPM của Groq Free."""
+    if not PIL_AVAILABLE:
+        return image_bytes, "image/jpeg"
+    try:
+        img = _PILImage.open(io.BytesIO(image_bytes))
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+        w, h = img.size
+        if max(w, h) > max_side:
+            ratio = max_side / max(w, h)
+            img = img.resize((int(w * ratio), int(h * ratio)), _PILImage.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        return buf.getvalue(), "image/jpeg"
+    except Exception as e:
+        print(f"[WARN] Resize ảnh thất bại: {e}")
+        return image_bytes, "image/jpeg"
+
+
+def _call_groq_vision_sync(
+    api_key: str,
+    system_instruction: str,
+    user_instruction: str,
+    image_bytes: bytes,
+    mime_type: str,
+) -> str:
+    """Gọi Groq Vision đồng bộ — dùng trong run_in_executor."""
+    if not OPENAI_SDK_AVAILABLE:
+        raise RuntimeError("Chưa cài openai SDK")
+
+    resized_bytes, final_mime = _resize_image_for_groq(image_bytes)
+    b64_str = base64.b64encode(resized_bytes).decode()
+
+    client = OpenAI(api_key=api_key, base_url=GROQ_BASE_URL)
+
+    messages: list[dict] = []
+    if system_instruction:
+        messages.append({"role": "system", "content": system_instruction})
+
+    instruct = user_instruction.strip() or "Mô tả ảnh này bằng tiếng Việt."
+    messages.append({
+        "role": "user",
+        "content": [
+            {"type": "text", "text": instruct},
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:{final_mime};base64,{b64_str}"},
+            },
+        ],
+    })
+
+    response = client.chat.completions.create(
+        model=GROQ_VISION_MODEL,
+        messages=messages,
+        temperature=0.7,
+        max_tokens=1000,
+    )
+    text = (response.choices[0].message.content or "").strip()
+    if not text:
+        raise RuntimeError("Groq Vision trả về rỗng")
+    return text
+
+
+async def groq_analyze_image(
+    system_instruction: str,
+    user_instruction: str,
+    image_bytes: bytes,
+    mime_type: str,
+) -> str:
+    """Phân tích ảnh bằng Groq Vision, xoay key round-robin như các provider khác."""
+    groq_providers = [p for p in ai_providers if _provider_kind(p) == "groq"]
+    if not groq_providers:
+        raise RuntimeError("Chưa có Groq key trong secrets.txt")
+    if not OPENAI_SDK_AVAILABLE:
+        raise RuntimeError("Chưa cài openai. Chạy: pip install openai")
+
+    # Lấy key từ provider đầu tiên (đã round-robin ở _ordered_providers)
+    api_key = groq_providers[0].client.api_key
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None,
+        _call_groq_vision_sync,
+        api_key,
+        system_instruction,
+        user_instruction,
+        image_bytes,
+        mime_type,
+    )
 
 
 async def generate_ai_chat(
