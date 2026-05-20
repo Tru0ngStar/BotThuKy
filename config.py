@@ -7,13 +7,14 @@ from pathlib import Path
 _BASE_DIR = Path(__file__).resolve().parent
 _SECRETS_TXT = _BASE_DIR / os.getenv("SECRETS_FILE", "secrets.txt")
 
-def _parse_secrets_txt(path: Path) -> tuple[str | None, list[str], list[str]]:
-    """Đọc secrets.txt — bot:, groq:, openrouter: (mỗi dòng = một key)."""
+def _parse_secrets_txt(path: Path) -> tuple[str | None, list[str], list[str], list[str]]:
+    """Đọc secrets.txt — bot:, groq:, openrouter:, gemini: (mỗi dòng = một key)."""
     bot_token = None
     groq_keys: list[str] = []
     openrouter_keys: list[str] = []
+    gemini_keys: list[str] = []
     if not path.is_file():
-        return bot_token, groq_keys, openrouter_keys
+        return bot_token, groq_keys, openrouter_keys, gemini_keys
 
     for raw in path.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
@@ -32,18 +33,22 @@ def _parse_secrets_txt(path: Path) -> tuple[str | None, list[str], list[str]]:
             groq_keys.append(value)
         elif name in ("openrouter", "or"):
             openrouter_keys.append(value)
+        elif name == "gemini":
+            gemini_keys.append(value)
         elif name == "ai":
             # Tự nhận loại key theo prefix
             if value.startswith("gsk_"):
                 groq_keys.append(value)
             elif value.startswith("sk-or-") or value.startswith("sk-"):
                 openrouter_keys.append(value)
+            elif value.startswith("AIza"):
+                gemini_keys.append(value)
             else:
                 groq_keys.append(value)
-    return bot_token, groq_keys, openrouter_keys
+    return bot_token, groq_keys, openrouter_keys, gemini_keys
 
 
-_TXT_BOT, _TXT_GROQ_KEYS, _TXT_OPENROUTER_KEYS = _parse_secrets_txt(_SECRETS_TXT)
+_TXT_BOT, _TXT_GROQ_KEYS, _TXT_OPENROUTER_KEYS, _TXT_GEMINI_KEYS = _parse_secrets_txt(_SECRETS_TXT)
 
 # =========================
 # BOT TOKEN & API KEYS — tự đọc từ secrets.txt khi chạy main.py
@@ -55,11 +60,12 @@ if not BOT_TOKEN:
         f"  bot:7123456789:AAH..."
     )
 
-if not _TXT_GROQ_KEYS and not _TXT_OPENROUTER_KEYS:
+if not _TXT_GROQ_KEYS and not _TXT_OPENROUTER_KEYS and not _TXT_GEMINI_KEYS:
     raise ValueError(
         f"Thiếu API AI. Thêm vào {_SECRETS_TXT}:\n"
         f"  groq:gsk_...\n"
-        f"  openrouter:sk-or-v1-..."
+        f"  openrouter:sk-or-v1-...\n"
+        f"  gemini:AIza..."
     )
 
 # =========================
@@ -74,7 +80,7 @@ DOWNLOADS_DIR = "downloads"
 # =========================
 from utils import ai_client
 
-ai_client.init_ai_providers(_TXT_GROQ_KEYS, _TXT_OPENROUTER_KEYS)
+ai_client.init_ai_providers(_TXT_GROQ_KEYS, _TXT_OPENROUTER_KEYS, _TXT_GEMINI_KEYS)
 AI_AVAILABLE = ai_client.AI_AVAILABLE
 generate_ai_chat = ai_client.generate_ai_chat
 ai_model = AI_AVAILABLE  # tương thích code cũ: if ai_model

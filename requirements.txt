@@ -1,5 +1,7 @@
 python-telegram-bot
 openai
+google-genai
+lunarcalendar
 feedparser
 requests
 yt-dlp
