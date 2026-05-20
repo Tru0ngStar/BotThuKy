@@ -431,10 +431,15 @@ async def group_action_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await query.answer("Dữ liệu không hợp lệ", show_alert=True)
         return
 
+    # Lấy nội dung tin nhắn gốc (bỏ inline keyboard cũ)
+    original_text = query.message.text or ""
+    now_str = datetime.now().strftime("%d/%m/%Y %H:%M")
+
     if action == "group_accept":
         set_group_status(chat_id, "active")
         await query.answer("Đã chấp nhận")
-        await query.edit_message_text("✅ Đã chấp nhận", parse_mode=ParseMode.MARKDOWN)
+        new_text = original_text + f"\n\n✅ **Đã chấp nhận** lúc {now_str}"
+        await query.edit_message_text(new_text, parse_mode=ParseMode.MARKDOWN)
         return
 
     if action == "group_reject":
@@ -444,7 +449,8 @@ async def group_action_callback(update: Update, context: ContextTypes.DEFAULT_TY
             print(f"Lỗi leave_chat (reject): {e}")
         set_group_status(chat_id, "inactive")
         await query.answer("Đã từ chối")
-        await query.edit_message_text("❌ Đã từ chối và rời nhóm", parse_mode=ParseMode.MARKDOWN)
+        new_text = original_text + f"\n\n❌ **Đã từ chối và rời nhóm** lúc {now_str}"
+        await query.edit_message_text(new_text, parse_mode=ParseMode.MARKDOWN)
         return
 
     if action == "group_leave":
@@ -456,17 +462,16 @@ async def group_action_callback(update: Update, context: ContextTypes.DEFAULT_TY
             if "deactivated" in err or "not found" in err or "kicked" in err or "chat_id_invalid" in err:
                 delete_group(chat_id)
                 await query.answer("Nhóm đã deactivated, đã xóa khỏi DB")
-                await query.edit_message_text(
-                    "⚠️ Nhóm đã deactivated (không còn thành viên).\n✅ Đã xóa khỏi DB.",
-                    parse_mode=ParseMode.MARKDOWN,
-                )
+                new_text = original_text + f"\n\n⚠️ **Nhóm đã deactivated** — xóa khỏi DB lúc {now_str}"
+                await query.edit_message_text(new_text, parse_mode=ParseMode.MARKDOWN)
                 return
             await query.answer("Không rời được", show_alert=True)
             print(f"Lỗi leave_chat (leave): {e}")
             return
         delete_group(chat_id)
         await query.answer("Đã rời nhóm")
-        await query.edit_message_text("🚪 Đã rời nhóm và xóa khỏi DB", parse_mode=ParseMode.MARKDOWN)
+        new_text = original_text + f"\n\n🚪 **Đã rời nhóm và xóa khỏi DB** lúc {now_str}"
+        await query.edit_message_text(new_text, parse_mode=ParseMode.MARKDOWN)
         return
 
 
