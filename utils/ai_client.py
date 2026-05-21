@@ -4,6 +4,7 @@ utils/ai_client.py — Groq (kênh 1) + OpenRouter (kênh 2) + Gemini (kênh 3)
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
 
 import base64
@@ -51,6 +52,8 @@ gemini_keys: list[str] = []
 gemini_key_index = 0
 _gemini_lock = asyncio.Lock()
 _last_provider_idx = 0
+_provider_cooldown: dict[str, float] = {}  # label -> timestamp hết hạn
+_COOLDOWN_SECONDS = 3700  # 1 giờ + buffer, cho TPD reset
 AI_AVAILABLE = False
 _user_provider_prefs: dict[int, str] = {}
 
@@ -328,7 +331,16 @@ async def _try_openai_providers(messages: list[dict], user_id: int | None) -> st
     global _last_provider_idx
     ordered = _ordered_providers(user_id)
     last_error: Exception | None = None
+    now = time.time()
+
     for prov in ordered:
+        # Bỏ qua provider đang trong thời gian cooldown TPD
+        cooldown_until = _provider_cooldown.get(prov.label, 0)
+        if now < cooldown_until:
+            remaining = int(cooldown_until - now)
+            print(f"[SKIP] {prov.label} còn cooldown {remaining}s, thử provider khác")
+            continue
+
         try:
             response = prov.client.chat.completions.create(
                 model=prov.model,
@@ -340,10 +352,22 @@ async def _try_openai_providers(messages: list[dict], user_id: int | None) -> st
                 raise RuntimeError("Model trả về rỗng")
             if prov in ai_providers:
                 _last_provider_idx = ai_providers.index(prov)
+            print(f"[OK] Dùng {prov.label}")  # log để biết đang xài provider nào
             return text
         except Exception as e:
             last_error = e
+            err_str = str(e)
             print(f"[WARN] {prov.label} lỗi: {e}")
+
+            # Nếu lỗi TPD (daily limit) → cooldown dài
+            if "tokens per day" in err_str.lower() or "tpd" in err_str.lower():
+                _provider_cooldown[prov.label] = time.time() + _COOLDOWN_SECONDS
+                print(f"[COOLDOWN] {prov.label} hết TPD, skip {_COOLDOWN_SECONDS}s")
+            # Nếu lỗi TPM (per-minute) → cooldown ngắn
+            elif "rate_limit_exceeded" in err_str and "tokens per minute" in err_str.lower():
+                _provider_cooldown[prov.label] = time.time() + 65
+                print(f"[COOLDOWN] {prov.label} rate limit/phút, skip 65s")
+
     raise last_error or RuntimeError("Không gọi được Groq/OpenRouter")
 
 
