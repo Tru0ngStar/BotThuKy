@@ -17,17 +17,18 @@ from utils.helpers import format_duration
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lệnh /start"""
     user = update.effective_user
-    welcome_text = f"""👋 Chào bé {user.full_name}!
+    welcome_text = f"""👋 Chào bé {user.full_name}🤓!
 
 Một số lệnh cơ bản:
-📰 /news - Tin mới từ VnExpress
-🎲 /daoly - Tặng đạo lý
+📰 /news - Báo mới từ VnExpress
+🌦️ /tt - thời tiết
+🎲 /daoly - Đạo lý từ thư ký
 📥 /download - Tải video YT/TikTok
-🎵 /mp3 <URL> - Tải nhạc MP3
+🎵 /mp3 - Tải nhạc MP3
 
-Các trò chơi giải trí:
+Trò chơi giải trí 😴:
 ♟️ /caro - Đánh Caro cùng nhau
-♟️ /xo - Chơi caro với người khác trong nhóm"""
+♟️ /xo - Reply để thách đấu caro"""
     await update.message.reply_text(welcome_text)
 
 
@@ -74,7 +75,7 @@ async def daoly(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_text = (
         f"Đây là đạo lý hôm nay dành cho {target_name}:\n\n"
         f"_{quote}_\n\n"
-        "Đạo lý bởi Thư ký"
+        "Đạo lý bởi Thư ký 🤓"
     )
     await update.message.reply_text(message_text, parse_mode=ParseMode.MARKDOWN)
     try:
