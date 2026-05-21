@@ -31,11 +31,11 @@ async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     member = await context.bot.get_chat_member(chat.id, user.id)
     if member.status not in ['creator', 'administrator']:
-        await update.message.reply_text("⛔ Chỉ admin mới có thể sử dụng lệnh này!")
+        await update.message.reply_text("⛔ Chỉ admin mới dùng dc nha bé!")
         return
 
     if not update.message.reply_to_message:
-        await update.message.reply_text("❌ Vui lòng reply tin nhắn của người cần cảnh báo!")
+        await update.message.reply_text("❌ Vui lòng reply tin nhắn !")
         return
 
     warned_user = update.message.reply_to_message.from_user
