@@ -533,7 +533,6 @@ async def greet_new_group(update: Update, context: ContextTypes.DEFAULT_TYPE):
     greet_text = (
         "🤖 **Xin chào mọi người!**\n\n"
         "Tớ là Thư Ký — bot hỗ trợ nhóm.\n"
-        "Gõ /help để xem danh sách lệnh nhé!\n\n"
         "Tớ sẽ phụ trách quán xuyến cái nhóm này, đừng có làm loạn! 😤"
     )
 
