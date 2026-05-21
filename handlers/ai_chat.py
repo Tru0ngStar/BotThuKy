@@ -5,6 +5,7 @@ import mimetypes
 import os
 import sqlite3
 import tempfile
+import time
 from datetime import datetime
 
 from lunarcalendar import Converter, Solar
@@ -286,29 +287,58 @@ def _mention_bot_from_caption(
 
 
 async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Lệnh /model — mỗi user tự chọn model AI."""
+    """Lệnh /model — mỗi user tự chọn model AI. Ẩn provider đang cooldown."""
     user_id = update.effective_user.id
     current_label = ai_client.get_provider_label(ai_client.get_provider(user_id))
+    now = time.time()
 
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("⚡ Groq", callback_data="ai_model|groq"),
-            InlineKeyboardButton("🧠 OpenRouter", callback_data="ai_model|openrouter"),
-        ],
-        [
-            InlineKeyboardButton("✨ Gemini", callback_data="ai_model|gemini"),
-            InlineKeyboardButton("🔄 Tự động", callback_data="ai_model|auto"),
-        ],
-    ])
+    # Check provider availability (có trong cooldown không)
+    has_groq = any(
+        p.label.startswith("Groq") and ai_client._provider_cooldown.get(p.label, 0) < now
+        for p in ai_client.ai_providers
+    )
+    has_or = any(
+        p.label.startswith("OpenRouter") and ai_client._provider_cooldown.get(p.label, 0) < now
+        for p in ai_client.ai_providers
+    )
+    has_gemini = bool(ai_client.gemini_keys)
+
+    # Xây dựng button dựa trên khả dụng
+    buttons = []
+    row1 = []
+    if has_groq:
+        row1.append(InlineKeyboardButton("⚡ Groq", callback_data="ai_model|groq"))
+    if has_or:
+        row1.append(InlineKeyboardButton("🧠 OpenRouter", callback_data="ai_model|openrouter"))
+    if row1:
+        buttons.append(row1)
+
+    row2 = []
+    if has_gemini:
+        row2.append(InlineKeyboardButton("✨ Gemini", callback_data="ai_model|gemini"))
+    row2.append(InlineKeyboardButton("🔄 Tự động", callback_data="ai_model|auto"))
+    buttons.append(row2)
+
+    # Tạo note cho provider đang cooldown
+    cooldown_notes = []
+    for p in ai_client.ai_providers:
+        until = ai_client._provider_cooldown.get(p.label, 0)
+        if until > now:
+            mins = int((until - now) / 60)
+            cooldown_notes.append(f"⏳ {p.label}: còn ~{mins} phút")
+
+    note = ("\n\n" + "\n".join(cooldown_notes)) if cooldown_notes else ""
+
+    keyboard = InlineKeyboardMarkup(buttons)
     await update.message.reply_text(
-        f"🤖 **Chọn model AI** (chỉ áp dụng cho cậu)\n\nĐang dùng: **{current_label}**",
+        f"🤖 **Chọn model AI** (chỉ áp dụng cho cậu)\n\nĐang dùng: **{current_label}**{note}",
         reply_markup=keyboard,
         parse_mode=ParseMode.MARKDOWN,
     )
 
 
 async def model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Xử lý nút chọn model — lưu theo từng user."""
+    """Xử lý nút chọn model — lưu theo từng user. Check cooldown trước."""
     query = update.callback_query
     if not query.data or not query.data.startswith("ai_model|"):
         return
@@ -319,15 +349,36 @@ async def model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("Lựa chọn không hợp lệ", show_alert=True)
         return
 
-    has_groq = any(p.label.startswith("Groq") for p in ai_client.ai_providers)
-    has_or = any(p.label.startswith("OpenRouter") for p in ai_client.ai_providers)
+    now = time.time()
+
+    # Check provider availability (có trong cooldown không)
+    has_groq = any(
+        p.label.startswith("Groq") and ai_client._provider_cooldown.get(p.label, 0) < now
+        for p in ai_client.ai_providers
+    )
+    has_or = any(
+        p.label.startswith("OpenRouter") and ai_client._provider_cooldown.get(p.label, 0) < now
+        for p in ai_client.ai_providers
+    )
     has_gemini = bool(ai_client.gemini_keys)
 
     if provider == "groq" and not has_groq:
-        await query.answer("Chưa có key Groq trong secrets.txt", show_alert=True)
+        groq_p = next((p for p in ai_client.ai_providers if p.label.startswith("Groq")), None)
+        if groq_p and groq_p.label in ai_client._provider_cooldown:
+            until = ai_client._provider_cooldown[groq_p.label]
+            mins = int((until - now) / 60)
+            await query.answer(f"⏳ Groq hết quota, chờ ~{mins} phút nữa", show_alert=True)
+        else:
+            await query.answer("Chưa có key Groq trong secrets.txt", show_alert=True)
         return
     if provider == "openrouter" and not has_or:
-        await query.answer("Chưa có key OpenRouter trong secrets.txt", show_alert=True)
+        or_p = next((p for p in ai_client.ai_providers if p.label.startswith("OpenRouter")), None)
+        if or_p and or_p.label in ai_client._provider_cooldown:
+            until = ai_client._provider_cooldown[or_p.label]
+            mins = int((until - now) / 60)
+            await query.answer(f"⏳ OpenRouter hết quota, chờ ~{mins} phút nữa", show_alert=True)
+        else:
+            await query.answer("Chưa có key OpenRouter trong secrets.txt", show_alert=True)
         return
     if provider == "gemini" and not has_gemini:
         await query.answer("Chưa có key Gemini trong secrets.txt", show_alert=True)

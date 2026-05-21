@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import re
 from dataclasses import dataclass
 
 import base64
@@ -84,6 +85,31 @@ def _is_retryable(exc: Exception) -> bool:
         "QUOTA", "TIMEOUT", "HIGH DEMAND",
     )
     return any(m in msg for m in markers)
+
+
+def _parse_retry_seconds(err_str: str) -> int | None:
+    """Lấy số giây cần chờ từ message lỗi Groq/OpenRouter.
+
+    Ví dụ: "Please try again in 56m35.52s" → 3395
+            "1h5m8.736s" → 3908
+    """
+    # Pattern: "try again in 1h5m8.736s" hoặc "1h5m8.736s"
+    m = re.search(r'try again in\s+((?:\d+h)?(?:\d+m)?(?:[\d.]+s)?)', err_str, re.IGNORECASE)
+    if not m:
+        return None
+
+    raw = m.group(1)
+    total = 0
+    for val, unit in re.findall(r'([\d.]+)([hms])', raw):
+        v = float(val)
+        if unit == 'h':
+            total += v * 3600
+        elif unit == 'm':
+            total += v * 60
+        elif unit == 's':
+            total += v
+
+    return int(total) + 10  # buffer 10s
 
 
 def init_ai_providers(
@@ -334,11 +360,11 @@ async def _try_openai_providers(messages: list[dict], user_id: int | None) -> st
     now = time.time()
 
     for prov in ordered:
-        # Bỏ qua provider đang trong thời gian cooldown TPD
+        # Bỏ qua provider đang trong thời gian cooldown
         cooldown_until = _provider_cooldown.get(prov.label, 0)
         if now < cooldown_until:
             remaining = int(cooldown_until - now)
-            print(f"[SKIP] {prov.label} còn cooldown {remaining}s, thử provider khác")
+            print(f"[SKIP] {prov.label} cooldown còn {remaining}s")
             continue
 
         try:
@@ -352,21 +378,18 @@ async def _try_openai_providers(messages: list[dict], user_id: int | None) -> st
                 raise RuntimeError("Model trả về rỗng")
             if prov in ai_providers:
                 _last_provider_idx = ai_providers.index(prov)
-            print(f"[OK] Dùng {prov.label}")  # log để biết đang xài provider nào
+            print(f"[OK] Dùng {prov.label}")
             return text
         except Exception as e:
             last_error = e
             err_str = str(e)
             print(f"[WARN] {prov.label} lỗi: {e}")
 
-            # Nếu lỗi TPD (daily limit) → cooldown dài
-            if "tokens per day" in err_str.lower() or "tpd" in err_str.lower():
-                _provider_cooldown[prov.label] = time.time() + _COOLDOWN_SECONDS
-                print(f"[COOLDOWN] {prov.label} hết TPD, skip {_COOLDOWN_SECONDS}s")
-            # Nếu lỗi TPM (per-minute) → cooldown ngắn
-            elif "rate_limit_exceeded" in err_str and "tokens per minute" in err_str.lower():
-                _provider_cooldown[prov.label] = time.time() + 65
-                print(f"[COOLDOWN] {prov.label} rate limit/phút, skip 65s")
+            # Parse thời gian cooldown từ error message
+            wait = _parse_retry_seconds(err_str)
+            if wait:
+                _provider_cooldown[prov.label] = time.time() + wait
+                print(f"[COOLDOWN] {prov.label} skip {wait}s")
 
     raise last_error or RuntimeError("Không gọi được Groq/OpenRouter")
 
