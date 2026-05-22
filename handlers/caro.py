@@ -31,8 +31,9 @@ def ensure_session(session_id, player_x, player_o=None):
     return session
 
 
-def build_caro_button_rows(board_id, board, size, last_row=None, last_col=None):
+def build_caro_button_rows(board_id, board, size, last_row=None, last_col=None, win_cells=None):
     rows = []
+    win_set = set(win_cells) if win_cells else set()
     show_numbers = size <= 7
     if show_numbers:
         header = [InlineKeyboardButton(" ", callback_data="caro_none")]
@@ -46,20 +47,22 @@ def build_caro_button_rows(board_id, board, size, last_row=None, last_col=None):
         for c in range(size):
             cell = board[r][c]
             label = "❌" if cell == 'X' else ("⭕" if cell == 'O' else "ㅤ")
-            is_last = (last_row is not None and last_col is not None
-                       and r == last_row and c == last_col)
+            is_highlight = (r, c) in win_set or (
+                win_set == set() and last_row is not None and last_col is not None
+                and r == last_row and c == last_col
+            )
             btn = InlineKeyboardButton(
                 label,
                 callback_data=f"caro_game|{board_id}|{r}|{c}",
-                style="primary" if is_last else None,
+                style="primary" if is_highlight else None,
             )
             row.append(btn)
         rows.append(row)
     return rows
 
 
-def make_caro_keyboard_dynamic(board_id, board, size, extra_rows=None, last_row=None, last_col=None):
-    rows = build_caro_button_rows(board_id, board, size, last_row=last_row, last_col=last_col)
+def make_caro_keyboard_dynamic(board_id, board, size, extra_rows=None, last_row=None, last_col=None, win_cells=None):
+    rows = build_caro_button_rows(board_id, board, size, last_row=last_row, last_col=last_col, win_cells=win_cells)
     if extra_rows:
         rows.extend(extra_rows)
     return InlineKeyboardMarkup(rows)
@@ -122,20 +125,20 @@ def check_winner_dynamic(board, size, win_count):
     for r in range(size):
         for c in range(size - win_count + 1):
             if board[r][c] != " " and all(board[r][c + i] == board[r][c] for i in range(win_count)):
-                return board[r][c]
+                return board[r][c], [(r, c + i) for i in range(win_count)]
     for c in range(size):
         for r in range(size - win_count + 1):
             if board[r][c] != " " and all(board[r + i][c] == board[r][c] for i in range(win_count)):
-                return board[r][c]
+                return board[r][c], [(r + i, c) for i in range(win_count)]
     for r in range(size - win_count + 1):
         for c in range(size - win_count + 1):
             if board[r][c] != " " and all(board[r + i][c + i] == board[r][c] for i in range(win_count)):
-                return board[r][c]
+                return board[r][c], [(r + i, c + i) for i in range(win_count)]
     for r in range(win_count - 1, size):
         for c in range(size - win_count + 1):
             if board[r][c] != " " and all(board[r - i][c + i] == board[r][c] for i in range(win_count)):
-                return board[r][c]
-    return None
+                return board[r][c], [(r - i, c + i) for i in range(win_count)]
+    return None, None
 
 
 async def start_caro_board_from_callback(query, context, size, win_count, player_x_id=None, player_o_id=None, session_id=None):
@@ -392,7 +395,7 @@ async def caro_game_callback(update, context):
     game['board'][r][c] = game['current']
     player_x_name = await get_member_name(context, game['chat_id'], game['player_x'], "Player 1")
     player_o_name = await get_member_name(context, game['chat_id'], game.get('player_o'), "player 2") if game.get('player_o') else None
-    winner = check_winner_dynamic(game['board'], size, win_count)
+    winner, win_cells = check_winner_dynamic(game['board'], size, win_count)
     draw = False
     result_note = None
     if winner:
@@ -424,8 +427,7 @@ async def caro_game_callback(update, context):
         kb = make_caro_keyboard_dynamic(
             board_id, game['board'], size,
             extra_rows=extra_rows,
-            last_row=game['last_row'],
-            last_col=game['last_col'],
+            win_cells=win_cells if winner else None,
         )
         display_text = build_caro_display_text(
             game, player_x_name, player_o_name, game['chat_id'], result_note, game_over=True
