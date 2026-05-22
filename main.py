@@ -40,6 +40,8 @@ def main():
     app.add_handler(CommandHandler("daoly",     misc.daoly))
     app.add_handler(CommandHandler("quiz",      misc.quiz))
     app.add_handler(CommandHandler("afk",       misc.afk))
+    app.add_handler(CommandHandler("ping",      misc.ping))
+    app.add_handler(CommandHandler("restart",   misc.restart))
 
     # Admin
     app.add_handler(CommandHandler("admins",    admin.admins))

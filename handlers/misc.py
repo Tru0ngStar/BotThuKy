@@ -1,10 +1,13 @@
 """
-handlers/misc.py — Misc commands: /start, /news, /tt, /daoly, /quiz, /afk
+handlers/misc.py — Misc commands: /start, /news, /tt, /daoly, /quiz, /afk, /ping, /restart
 """
 import random
 import requests
 import feedparser
-from datetime import datetime
+import sys
+import time
+import os
+from datetime import datetime, timezone
 from telegram import Update
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
@@ -12,6 +15,8 @@ from config import RSS_URL, QUOTES, QUIZ_QUESTIONS
 import sqlite3
 from database import get_db_connection, user_afk, quiz_messages
 from utils.helpers import format_duration
+
+_BOT_START_TIME = datetime.now()
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -139,3 +144,34 @@ async def afk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         user_afk[user_id] = {"reason": reason, "time": datetime.now()}
     await update.message.reply_text(f"💤 {user.full_name} đã offline\nLý do: {reason}")
+
+
+async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lệnh /ping — đo latency và uptime."""
+    receive_ms = max(0.0, (datetime.now(timezone.utc) - update.message.date).total_seconds() * 1000)
+    t0 = time.monotonic()
+    msg = await update.message.reply_text("🏓")
+    api_ms = (time.monotonic() - t0) * 1000
+    delta = datetime.now() - _BOT_START_TIME
+    total_s = int(delta.total_seconds())
+    days, rem = divmod(total_s, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, seconds = divmod(rem, 60)
+    uptime_str = f"{days}d {hours}h {minutes}m {seconds}s"
+    await msg.edit_text(
+        f"🏓 *Pong\!*\n"
+        f"📡 Nhận tin nhắn: `{receive_ms:.0f} ms`\n"
+        f"🌐 Telegram API: `{api_ms:.0f} ms`\n"
+        f"⏱️ Uptime: `{uptime_str}`",
+        parse_mode=ParseMode.MARKDOWN_V2,
+    )
+
+
+async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lệnh /restart — chỉ owner."""
+    from config import OWNER_ID
+    if update.effective_user.id != OWNER_ID:
+        await update.message.reply_text("⛔ Chỉ owner mới dùng được lệnh này.")
+        return
+    await update.message.reply_text("🔄 Đang khởi động lại bot...")
+    os.execv(sys.executable, [sys.executable] + sys.argv)
