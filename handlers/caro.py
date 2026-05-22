@@ -254,15 +254,25 @@ async def rank_caro(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def set_caro_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
-    if not chat or chat.type == "private":
-        await update.message.reply_text("⚠️ Lệnh /set chỉ dùng trong nhóm.")
-        return
-    chat_id = chat.id
     user = update.effective_user
-    member = await context.bot.get_chat_member(chat_id, user.id)
-    if user.id != OWNER_ID and member.status not in ("administrator", "creator"):
-        await update.message.reply_text("⛔ Chỉ admin mới được dùng lệnh này.")
+
+    if not chat:
         return
+
+    is_private = chat.type == "private"
+    is_owner = user.id == OWNER_ID
+
+    if is_private and not is_owner:
+        await update.message.reply_text("⚠️ Lệnh /set chỉ dùng trong nhóm hoặc chat riêng với chủ bot.")
+        return
+
+    if not is_private:
+        member = await context.bot.get_chat_member(chat.id, user.id)
+        if not is_owner and member.status not in ("administrator", "creator"):
+            await update.message.reply_text("⛔ Chỉ admin mới được dùng lệnh này.")
+            return
+
+    chat_id = chat.id
     target_user, target_id, args = None, None, context.args
     if update.message.reply_to_message:
         target_user = update.message.reply_to_message.from_user
