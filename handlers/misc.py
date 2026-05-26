@@ -148,21 +148,21 @@ async def afk(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lệnh /ping — đo latency và uptime."""
-    receive_ms = max(0.0, (datetime.now(timezone.utc) - update.message.date).total_seconds() * 1000)
     t0 = time.monotonic()
     msg = await update.message.reply_text("🏓")
     api_ms = (time.monotonic() - t0) * 1000
+
     delta = datetime.now() - _BOT_START_TIME
     total_s = int(delta.total_seconds())
     days, rem = divmod(total_s, 86400)
     hours, rem = divmod(rem, 3600)
     minutes, seconds = divmod(rem, 60)
     uptime_str = f"{days}d {hours}h {minutes}m {seconds}s"
+
     await msg.edit_text(
-        f"🏓 *Pong\!*\n"
-        f"📡 Nhận tin nhắn: `{receive_ms:.0f} ms`\n"
-        f"🌐 Telegram API: `{api_ms:.0f} ms`\n"
-        f"⏱️ Uptime: `{uptime_str}`",
+        f"🏓 Pong\!\n"
+        f"⏱️ Thời gian phản hồi: `{api_ms:.3f} ms`\n"
+        f"🕐 Thời gian Uptime: `{uptime_str}`",
         parse_mode=ParseMode.MARKDOWN_V2,
     )
 
